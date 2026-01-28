@@ -84,14 +84,13 @@ This creates `psp_drp.prx` in the `psp-plugin` folder.
 
 1. Copy all PRX files to `ms0:/SEPLUGINS/pspdrp/`:
    - `psp-plugin/loader/psp_drp_loader.prx`
-   - `psp-plugin/ui/psp_drp_ui.prx`
    - `psp-plugin/net/psp_drp_net.prx`
 2. Update `ms0:/SEPLUGINS/plugins.txt` and add:
    ```
    xmb, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    ```
-   (Do not add `psp_drp_ui.prx` or `psp_drp_net.prx` to plugins.txt)
+   (Do not add `psp_drp_net.prx` to plugins.txt - it is loaded automatically)
 3. Create config file `ms0:/SEPLUGINS/pspdrp/psp_drp.ini`:
    ```ini
    enabled = 1

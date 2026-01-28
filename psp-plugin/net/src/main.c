@@ -126,13 +126,13 @@ static int plugin_thread(SceSize args, void *argp) {
   }
 
   net_log("Config: enabled=%d ip=%s port=%d auto=%d always=%d icons=%d "
-          "poll_ms=%lu hb_ms=%lu update_ms=%lu timeout_s=%lu",
+          "poll_ms=%lu hb_ms=%lu update_ms=%lu timeout_s=%lu send_once=%d",
           g_config.enabled, g_config.desktop_ip, g_config.port,
           g_config.auto_discovery, g_config.always_active, g_config.send_icons,
           (unsigned long)g_config.poll_interval_ms,
           (unsigned long)g_config.heartbeat_interval_ms,
           (unsigned long)g_config.game_update_interval_ms,
-          (unsigned long)g_config.connect_timeout_s);
+          (unsigned long)g_config.connect_timeout_s, g_config.send_once);
 
   if (!g_config.enabled) {
     net_log("Plugin disabled in config");
@@ -143,7 +143,7 @@ static int plugin_thread(SceSize args, void *argp) {
   if (g_started_from_ui) {
     memset(&g_current_game, 0, sizeof(g_current_game));
     strcpy(g_current_game.game_id, "XMB");
-    strcpy(g_current_game.title, "XMB Menu");
+    strcpy(g_current_game.title, "Browsing XMB");
     g_current_game.state = STATE_XMB;
     g_current_game.start_time = 0;
     g_current_game.has_icon = 0;
@@ -332,6 +332,17 @@ static int plugin_thread(SceSize args, void *argp) {
             }
             g_game_changed = 0;
             g_last_game_send = now;
+
+            /* Send once mode: after first successful send, shutdown and exit */
+            if (g_config.send_once) {
+              net_log("Send once complete, shutting down network");
+              network_disconnect();
+              network_shutdown();
+              g_network_initialized = 0;
+              g_connected = 0;
+              g_running = 0;
+              break;
+            }
           }
         }
       }

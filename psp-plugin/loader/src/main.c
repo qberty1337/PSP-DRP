@@ -17,20 +17,14 @@ PSP_MODULE_INFO(LOADER_MODULE_NAME, PSP_MODULE_USER, 1, 0);
 #ifndef LOG_PREFIX
 #define LOG_PREFIX "[LOADER] "
 #endif
-#define UI_PRX_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp_ui.prx"
 #define NET_PRX_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp_net.prx"
 #define CONFIG_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp.ini"
 #define HEX_CHARS "0123456789ABCDEF"
 
 #define RPC_START_MAGIC 0x31504352
-#define RPC_START_FLAG_FROM_UI 0x01
 
 #ifndef START_PROFILE_ID
 #define START_PROFILE_ID 1
-#endif
-
-#ifndef START_FLAGS
-#define START_FLAGS RPC_START_FLAG_FROM_UI
 #endif
 
 #ifndef AUTO_START_DELAY_MS
@@ -39,10 +33,6 @@ PSP_MODULE_INFO(LOADER_MODULE_NAME, PSP_MODULE_USER, 1, 0);
 
 #ifndef AUTO_START_MAX_ATTEMPTS
 #define AUTO_START_MAX_ATTEMPTS 50
-#endif
-
-#ifndef ENABLE_HOTKEY
-#define ENABLE_HOTKEY 0
 #endif
 
 #ifndef DEFAULT_SKIP_BUTTON
@@ -54,6 +44,8 @@ typedef struct {
   int profile_id;
   unsigned int flags;
 } RpcStartArgs;
+
+#define RPC_START_FLAG_FROM_UI 0x01
 
 static void loader_log_raw(const char *msg) {
   SceUID fd;
@@ -255,7 +247,7 @@ static int load_net_plugin(void) {
     memset(&args, 0, sizeof(args));
     args.magic = RPC_START_MAGIC;
     args.profile_id = START_PROFILE_ID;
-    args.flags = START_FLAGS;
+    args.flags = RPC_START_FLAG_FROM_UI;
 
     start_res = sceKernelStartModule(modid, sizeof(args), &args, NULL, NULL);
     if (start_res < 0) {
@@ -276,46 +268,6 @@ static int load_net_plugin(void) {
     }
   }
   loader_log_raw("Net PRX started");
-  return 0;
-}
-
-static int load_ui_plugin(void) {
-  char msg[12];
-  char hex[9];
-  int i;
-  SceUID modid = sceKernelLoadModule(UI_PRX_PATH, 0, NULL);
-  if (modid < 0) {
-    loader_log_raw("Load UI PRX failed");
-    u32_to_hex(hex, (unsigned int)modid);
-    msg[0] = '0';
-    msg[1] = 'x';
-    for (i = 0; i < 8; i++) {
-      msg[2 + i] = hex[i];
-    }
-    msg[10] = '\0';
-    loader_log_raw(msg);
-    return -1;
-  }
-  {
-    int start_res = sceKernelStartModule(modid, 0, NULL, NULL, NULL);
-    if (start_res < 0) {
-      char msg[12];
-      char hex[9];
-      int i;
-      loader_log_raw("Start UI PRX failed");
-      u32_to_hex(hex, (unsigned int)start_res);
-      msg[0] = '0';
-      msg[1] = 'x';
-      for (i = 0; i < 8; i++) {
-        msg[2 + i] = hex[i];
-      }
-      msg[10] = '\0';
-      loader_log_raw(msg);
-      sceKernelUnloadModule(modid);
-      return -1;
-    }
-  }
-  loader_log_raw("UI PRX started");
   return 0;
 }
 
@@ -371,42 +323,6 @@ static int auto_start_thread(SceSize args, void *argp) {
 }
 #endif
 
-static int loader_thread(SceSize args, void *argp) {
-  (void)args;
-  (void)argp;
-
-#if ENABLE_HOTKEY
-  SceCtrlData pad;
-  unsigned int prev = 0;
-  const unsigned int toggle_combo = PSP_CTRL_LTRIGGER | PSP_CTRL_SELECT;
-#endif
-
-  sceCtrlSetSamplingCycle(0);
-  sceCtrlSetSamplingMode(PSP_CTRL_MODE_DIGITAL);
-
-  loader_log_raw("Loader thread running");
-
-  while (1) {
-#if ENABLE_HOTKEY
-    if (sceCtrlPeekBufferPositive(&pad, 1) > 0) {
-      if ((pad.Buttons & toggle_combo) == toggle_combo &&
-          (prev & toggle_combo) != toggle_combo) {
-        loader_log_raw("Hotkey pressed");
-#ifdef AUTO_START_NET
-        load_net_plugin();
-#else
-        load_ui_plugin();
-#endif
-      }
-      prev = pad.Buttons;
-    }
-#endif
-    sceKernelDelayThread(100 * 1000);
-  }
-
-  return 0;
-}
-
 int module_start(SceSize args, void *argp) {
   (void)args;
   (void)argp;
@@ -427,14 +343,6 @@ int module_start(SceSize args, void *argp) {
   }
 #endif
 
-  SceUID thid = sceKernelCreateThread("PSPDRP_Loader", loader_thread, 0x11,
-                                      0x2000, PSP_THREAD_ATTR_USER, NULL);
-
-  if (thid >= 0) {
-    sceKernelStartThread(thid, 0, NULL);
-  } else {
-    loader_log_raw("Thread create failed");
-  }
   return 0;
 }
 

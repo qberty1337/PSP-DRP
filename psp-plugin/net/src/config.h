@@ -50,6 +50,9 @@ typedef struct {
 
   /* Connect timeout (seconds, 0 = disable) */
   uint32_t connect_timeout_s;
+
+  /* Send once mode: send update on first load, then unload net */
+  int send_once;
 } PluginConfig;
 
 /**
