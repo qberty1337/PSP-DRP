@@ -1,0 +1,8 @@
+services:
+  pspdev:
+    image: pspdev/pspdev:latest
+    volumes:
+      - ./psp-plugin:/src
+    working_dir: /src
+    command: make
+    # For interactive shell: docker compose run --rm pspdev /bin/bash

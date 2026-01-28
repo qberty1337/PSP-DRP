@@ -1,0 +1,50 @@
+# Rust
+/desktop-companion/target/
+**/*.rs.bk
+Cargo.lock
+
+# PSP build artifacts
+/psp-plugin/*.o
+/psp-plugin/*.elf
+/psp-plugin/*.prx
+/psp-plugin/*.PBP
+/psp-plugin/EBOOT.PBP
+/psp-plugin/PARAM.SFO
+/psp-plugin/src/*.o
+/psp-plugin/loader/*.o
+/psp-plugin/loader/*.elf
+/psp-plugin/loader/*.prx
+/psp-plugin/loader/src/*.o
+/psp-plugin/loader_game/*.o
+/psp-plugin/loader_game/*.elf
+/psp-plugin/loader_game/*.prx
+/psp-plugin/loader_game/src/*.o
+/psp-plugin/ui/*.o
+/psp-plugin/ui/*.elf
+/psp-plugin/ui/*.prx
+/psp-plugin/ui/src/*.o
+/psp-plugin/net/*.o
+/psp-plugin/net/*.elf
+/psp-plugin/net/*.prx
+/psp-plugin/net/src/*.o
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files with secrets
+config.toml
+discord_rpc.ini
+
+# Icons cache
+/desktop-companion/icons/
+
+# Logs
+*.log

@@ -1,0 +1,37 @@
+# Sample desktop configuration
+# This file will be auto-generated on first run
+# Location: same directory as the desktop app binary
+
+[discord]
+# Your Discord Application ID (REQUIRED)
+# Get this from https://discord.com/developers/applications
+client_id = "YOUR_APPLICATION_ID_HERE"
+
+# Show elapsed play time
+show_elapsed_time = true
+
+# Custom status text (shown below game title)
+state_text = "Playing on PSP"
+
+[network]
+# Port to listen for PSP connections
+listen_port = 9276
+
+# Port for auto-discovery broadcasts
+discovery_port = 9277
+
+# Enable auto-discovery of PSPs on network
+auto_discovery = true
+
+# How often to send discovery broadcasts (seconds)
+discovery_interval = 30
+
+# Timeout before considering PSP disconnected (seconds)
+timeout_seconds = 90
+
+[display]
+# Show system tray icon (not yet implemented)
+show_tray_icon = true
+
+# Log level: trace, debug, info, warn, error
+log_level = "info"
