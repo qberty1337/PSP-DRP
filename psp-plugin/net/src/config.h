@@ -53,6 +53,9 @@ typedef struct {
 
   /* Send once mode: send update on first load, then unload net */
   int send_once;
+
+  /* Enable logging to memory stick */
+  int enable_logging;
 } PluginConfig;
 
 /**

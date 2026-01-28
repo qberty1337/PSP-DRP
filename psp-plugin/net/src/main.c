@@ -72,12 +72,20 @@ static char g_last_icon_id[10] = {0};
 #define GAME_CHECK_INTERVAL_US (2 * 1000 * 1000) /* 2 seconds */
 #define CONNECT_RETRY_US (5 * 1000 * 1000)       /* 5 seconds */
 
+/* Logging enable flag (set from config after load) */
+static int g_logging_enabled = 0;
+
 void net_log(const char *fmt, ...) {
   char buf[128];
   char line[160];
   va_list args;
   SceUID fd;
   int len;
+
+  /* Skip if logging is disabled */
+  if (!g_logging_enabled) {
+    return;
+  }
 
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
@@ -124,6 +132,9 @@ static int plugin_thread(SceSize args, void *argp) {
   if (config_load(&g_config) < 0) {
     config_set_defaults(&g_config);
   }
+
+  /* Set logging flag from config */
+  g_logging_enabled = g_config.enable_logging;
 
   net_log("Config: enabled=%d ip=%s port=%d auto=%d always=%d icons=%d "
           "poll_ms=%lu hb_ms=%lu update_ms=%lu timeout_s=%lu send_once=%d",

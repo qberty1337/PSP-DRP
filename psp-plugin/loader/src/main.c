@@ -47,6 +47,12 @@ typedef struct {
 
 #define RPC_START_FLAG_FROM_UI 0x01
 
+#ifndef START_FLAGS
+#define DEFAULT_START_FLAGS RPC_START_FLAG_FROM_UI
+#else
+#define DEFAULT_START_FLAGS START_FLAGS
+#endif
+
 static void loader_log_raw(const char *msg) {
   SceUID fd;
   int len = 0;
@@ -247,7 +253,7 @@ static int load_net_plugin(void) {
     memset(&args, 0, sizeof(args));
     args.magic = RPC_START_MAGIC;
     args.profile_id = START_PROFILE_ID;
-    args.flags = RPC_START_FLAG_FROM_UI;
+    args.flags = DEFAULT_START_FLAGS;
 
     start_res = sceKernelStartModule(modid, sizeof(args), &args, NULL, NULL);
     if (start_res < 0) {

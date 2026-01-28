@@ -35,6 +35,7 @@ void config_set_defaults(PluginConfig *config) {
   config->game_update_interval_ms = 60000;
   config->connect_timeout_s = 30;
   config->send_once = 0;
+  config->enable_logging = 0;
 }
 
 /**
@@ -246,6 +247,8 @@ static void parse_line(const char *line, PluginConfig *config) {
     config->connect_timeout_s = t;
   } else if (strcmp(key, "send_once") == 0) {
     config->send_once = parse_bool(value);
+  } else if (strcmp(key, "enable_logging") == 0) {
+    config->enable_logging = parse_bool(value);
   }
 }
 
