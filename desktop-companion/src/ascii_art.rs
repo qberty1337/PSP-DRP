@@ -20,7 +20,7 @@ const ASCII_WIDTH: u32 = 35;
 
 /// Target width for Braille art (in characters)
 /// Each Braille character represents 2 horizontal pixels
-const BRAILLE_WIDTH: u32 = 50;
+const BRAILLE_WIDTH: u32 = 40;
 
 /// Icon rendering mode
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,12 +179,18 @@ impl IconManager {
             }
         };
 
+        // Log source dimensions
+        let (orig_w, orig_h) = img.dimensions();
+        info!("Icon source dimensions: {}x{}", orig_w, orig_h);
+
         // Resize to target width (height is proportional, but we need multiples of 4)
         let (orig_w, orig_h) = img.dimensions();
         let target_w = BRAILLE_WIDTH * 2; // 2 pixels per Braille char width
+        
+        // Calculate height maintaining aspect ratio
         let target_h = (orig_h as f32 / orig_w as f32 * target_w as f32) as u32;
-        // Add 4 pixels (1 braille row) for extra height, then round up to multiple of 4
-        let target_h = ((target_h + 4 + 3) / 4) * 4;
+        // Round up to multiple of 4 for Braille rows
+        let target_h = ((target_h + 3) / 4) * 4;
 
         let img = img.resize_exact(
             target_w,
