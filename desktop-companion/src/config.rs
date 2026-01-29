@@ -65,6 +65,11 @@ pub struct DisplayConfig {
     /// Log level (trace, debug, info, warn, error)
     #[serde(default = "default_log_level")]
     pub log_level: String,
+
+    /// Icon rendering mode: "ascii" or "braille"
+    /// Braille offers 4x more vertical resolution
+    #[serde(default = "default_icon_mode")]
+    pub icon_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +105,9 @@ fn default_timeout() -> u64 {
 fn default_log_level() -> String {
     "info".to_string()
 }
+fn default_icon_mode() -> String {
+    "ascii".to_string()
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -119,6 +127,7 @@ impl Default for Config {
             display: DisplayConfig {
                 show_tray_icon: true,
                 log_level: default_log_level(),
+                icon_mode: default_icon_mode(),
             },
             usage: UsageConfig::default(),
         }

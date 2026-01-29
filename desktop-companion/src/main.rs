@@ -19,10 +19,10 @@ use anyhow::Result;
 use tokio::sync::{mpsc, RwLock};
 use tracing::error;
 
-use ascii_art::IconManager;
+use ascii_art::{IconManager, IconMode};
 use config::Config;
 use discord::DiscordManager;
-use server::{Server, ServerEvent};
+use server::{Server, ServerCommand, ServerEvent};
 use tui::{Tui, TuiEvent, TuiState};
 use usage_tracker::UsageTracker;
 
@@ -134,8 +134,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Initialize icon manager
-    let mut icon_manager = IconManager::new();
+    // Initialize icon manager with configured mode
+    let icon_mode = IconMode::from(config.display.icon_mode.as_str());
+    let mut icon_manager = IconManager::new_with_mode(icon_mode);
 
     // Create server event channel
     let (event_tx, mut event_rx) = mpsc::channel::<ServerEvent>(100);
@@ -166,6 +167,9 @@ async fn main() -> Result<()> {
     }
     tui.draw(&tui_state.read().await.clone())?;
 
+    // Create command channel for server
+    let server_cmd_tx = server.create_command_channel();
+
     // Spawn server run loop
     let server_handle = tokio::spawn(async move {
         if let Err(e) = server.run().await {
@@ -187,6 +191,7 @@ async fn main() -> Result<()> {
                     &mut discord,
                     &mut usage_tracker,
                     &mut icon_manager,
+                    &server_cmd_tx,
                 ).await;
             }
 
@@ -285,6 +290,7 @@ async fn handle_server_event(
     discord: &mut DiscordManager,
     usage_tracker: &mut UsageTracker,
     icon_manager: &mut IconManager,
+    server_cmd_tx: &mpsc::Sender<ServerCommand>,
 ) {
     match event {
         ServerEvent::PspConnected { addr, name, battery } => {
@@ -341,13 +347,25 @@ async fn handle_server_event(
                 } else {
                     state.log_info(&format!("State: {}", info.state.as_str()));
                 }
-                
-                // Clear ASCII art for new game (will be regenerated or received)
-                if !icon_manager.has_ascii(&info.game_id) {
-                    state.ascii_art = None;
-                } else {
-                    state.ascii_art = icon_manager.get_ascii(&info.game_id).cloned();
+            }
+
+            // Check if we have the icon cached - request on ANY update if missing
+            if !icon_manager.has_ascii(&info.game_id) {
+                state.ascii_art = None;
+                // Request icon from PSP (retry on every update until we get it)
+                if !info.game_id.is_empty() && info.game_id != "XMB" && info.game_id != "UNK" {
+                    // Only log on first request (game change)
+                    if game_changed {
+                        state.log_info(&format!("Requesting icon for {}", info.game_id));
+                    }
+                    let _ = server_cmd_tx.send(ServerCommand::RequestIcon { 
+                        addr, 
+                        game_id: info.game_id.clone() 
+                    }).await;
                 }
+            } else if state.ascii_art.is_none() {
+                // We have it cached but haven't set it yet
+                state.ascii_art = icon_manager.get_ascii(&info.game_id).cloned();
             }
 
             state.current_game = Some(info.clone());
@@ -386,7 +404,7 @@ async fn handle_server_event(
                 // Only update if this is the current game
                 if state.current_game.as_ref().map(|g| &g.game_id) == Some(&game_id) {
                     state.ascii_art = Some(ascii);
-                    state.log_success(&format!("ASCII art ready for {}", game_id));
+                    state.log_success(&format!("Icon ready for {}", game_id));
                 }
             }
         }

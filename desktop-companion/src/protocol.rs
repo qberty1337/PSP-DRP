@@ -22,6 +22,7 @@ pub enum MessageType {
 
     // Desktop -> PSP
     Ack = 0x10,
+    IconRequest = 0x11,  // Request icon for a game_id
     DiscoveryRequest = 0x20,
 }
 
@@ -35,6 +36,7 @@ impl TryFrom<u8> for MessageType {
             0x03 => Ok(Self::IconChunk),
             0x04 => Ok(Self::IconEnd),
             0x10 => Ok(Self::Ack),
+            0x11 => Ok(Self::IconRequest),
             0x20 => Ok(Self::DiscoveryRequest),
             0x21 => Ok(Self::DiscoveryResponse),
             _ => Err(()),
@@ -290,6 +292,38 @@ impl DiscoveryRequest {
         let version_bytes = self.version.as_bytes();
         buf.extend_from_slice(&version_bytes[..version_bytes.len().min(7)]);
         buf.resize(buf.len() + (8 - version_bytes.len().min(7)), 0);
+
+        buf
+    }
+}
+
+/// Icon request (sent by desktop to request icon for a game)
+#[derive(Debug, Clone)]
+pub struct IconRequest {
+    pub game_id: String,
+}
+
+impl IconRequest {
+    pub fn new(game_id: &str) -> Self {
+        Self {
+            game_id: game_id.to_string(),
+        }
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + 1 + 10);
+
+        // Magic
+        buf.extend_from_slice(MAGIC);
+
+        // Type
+        buf.push(MessageType::IconRequest as u8);
+
+        // Game ID (10 bytes, null-padded)
+        let game_id_bytes = self.game_id.as_bytes();
+        let copy_len = game_id_bytes.len().min(9);
+        buf.extend_from_slice(&game_id_bytes[..copy_len]);
+        buf.resize(buf.len() + (10 - copy_len), 0);
 
         buf
     }

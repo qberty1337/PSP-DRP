@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::Config;
 use crate::protocol::{
     parse_packet, DiscoveryRequest, DiscoveryResponse, GameInfo, Heartbeat, IconChunk, IconEnd,
-    MessageType,
+    IconRequest, MessageType,
 };
 
 /// Maximum UDP packet size
@@ -56,6 +56,13 @@ struct IconBuffer {
     received_chunks: u16,
 }
 
+/// Commands that can be sent to the server
+#[derive(Debug, Clone)]
+pub enum ServerCommand {
+    /// Request an icon for a game from a specific PSP
+    RequestIcon { addr: SocketAddr, game_id: String },
+}
+
 /// UDP server for receiving PSP data
 pub struct Server {
     config: Config,
@@ -64,6 +71,7 @@ pub struct Server {
     local_ipv4: Option<Ipv4Addr>,
     connections: Arc<RwLock<HashMap<SocketAddr, PspConnection>>>,
     event_tx: mpsc::Sender<ServerEvent>,
+    command_rx: Option<mpsc::Receiver<ServerCommand>>,
 }
 
 impl Server {
@@ -75,7 +83,15 @@ impl Server {
             local_ipv4: None,
             connections: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
+            command_rx: None,
         }
+    }
+
+    /// Create a command channel for the server
+    pub fn create_command_channel(&mut self) -> mpsc::Sender<ServerCommand> {
+        let (tx, rx) = mpsc::channel(32);
+        self.command_rx = Some(rx);
+        tx
     }
 
     fn get_local_ipv4() -> Option<Ipv4Addr> {
@@ -125,8 +141,8 @@ impl Server {
     }
 
     /// Run the main receive loop
-    pub async fn run(&self) -> Result<()> {
-        let socket = self.socket.as_ref().ok_or_else(|| anyhow::anyhow!("Server not started"))?;
+    pub async fn run(&mut self) -> Result<()> {
+        let socket = self.socket.as_ref().ok_or_else(|| anyhow::anyhow!("Server not started"))?.clone();
         let connections = self.connections.clone();
         let event_tx = self.event_tx.clone();
         let timeout_secs = self.config.network.timeout_seconds;
@@ -161,17 +177,40 @@ impl Server {
             }
         });
 
+        // Take the command receiver if we have one
+        let mut command_rx = self.command_rx.take();
+
         // Main receive loop
         let mut buf = [0u8; MAX_PACKET_SIZE];
         loop {
-            match socket.recv_from(&mut buf).await {
-                Ok((len, addr)) => {
-                    if let Err(e) = self.handle_packet(&buf[..len], addr).await {
-                        debug!("Error handling packet from {}: {}", addr, e);
+            tokio::select! {
+                // Handle incoming packets
+                result = socket.recv_from(&mut buf) => {
+                    match result {
+                        Ok((len, addr)) => {
+                            if let Err(e) = self.handle_packet(&buf[..len], addr).await {
+                                debug!("Error handling packet from {}: {}", addr, e);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error receiving packet: {}", e);
+                        }
                     }
                 }
-                Err(e) => {
-                    error!("Error receiving packet: {}", e);
+                // Handle commands from main loop
+                Some(cmd) = async { 
+                    match &mut command_rx {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match cmd {
+                        ServerCommand::RequestIcon { addr, game_id } => {
+                            if let Err(e) = self.request_icon(addr, &game_id).await {
+                                warn!("Failed to request icon: {}", e);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -347,6 +386,17 @@ impl Server {
             buf.extend_from_slice(crate::protocol::MAGIC);
             buf.push(crate::protocol::MessageType::Ack as u8);
             socket.send_to(&buf, addr).await?;
+        }
+        Ok(())
+    }
+
+    /// Request an icon from a connected PSP
+    pub async fn request_icon(&self, addr: SocketAddr, game_id: &str) -> Result<()> {
+        if let Some(socket) = &self.socket {
+            let request = IconRequest::new(game_id);
+            let packet = request.encode();
+            socket.send_to(&packet, addr).await?;
+            info!("Requested icon for {} from {}", game_id, addr);
         }
         Ok(())
     }

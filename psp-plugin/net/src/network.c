@@ -292,8 +292,13 @@ void network_disconnect(void) {
   sceNetApctlDisconnect();
 }
 
-int network_poll_ack(void) {
-  uint8_t buffer[8];
+/**
+ * Poll for incoming messages (ACK or icon request)
+ * Returns: 1 = ACK received, 2 = icon request received, 0 = nothing
+ * If icon request, game_id_out will be filled
+ */
+int network_poll_message(char *game_id_out) {
+  uint8_t buffer[32];
   struct sockaddr_in from_addr;
   socklen_t from_len = sizeof(from_addr);
   int ret;
@@ -316,14 +321,40 @@ int network_poll_ack(void) {
     return 0;
   }
 
-  if (buffer[4] != MSG_ACK) {
-    return 0;
+  /* Handle based on message type */
+  if (buffer[4] == MSG_ACK) {
+    g_desktop_addr.sin_family = AF_INET;
+    g_desktop_addr.sin_addr = from_addr.sin_addr;
+    g_desktop_addr.sin_port = from_addr.sin_port;
+    return 1;
   }
 
-  g_desktop_addr.sin_family = AF_INET;
-  g_desktop_addr.sin_addr = from_addr.sin_addr;
-  g_desktop_addr.sin_port = from_addr.sin_port;
-  return 1;
+  if (buffer[4] == MSG_ICON_REQUEST) {
+    if (ret >= (int)(sizeof(PacketHeader) + sizeof(IconRequestPacket))) {
+      if (game_id_out != NULL) {
+        IconRequestPacket *request =
+            (IconRequestPacket *)(buffer + sizeof(PacketHeader));
+        copy_str(game_id_out, 10, request->game_id);
+        net_log("Icon request received for: %s", game_id_out);
+      }
+      return 2;
+    }
+  }
+
+  return 0;
+}
+
+/* Legacy wrapper for ACK polling */
+int network_poll_ack(void) {
+  char game_id[10];
+  int result = network_poll_message(game_id);
+  return (result == 1) ? 1 : 0;
+}
+
+/* Legacy wrapper for icon request polling */
+int network_poll_icon_request(char *game_id_out) {
+  int result = network_poll_message(game_id_out);
+  return (result == 2) ? 1 : 0;
 }
 
 /**

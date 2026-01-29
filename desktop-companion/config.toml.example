@@ -35,3 +35,6 @@ show_tray_icon = true
 
 # Log level: trace, debug, info, warn, error
 log_level = "info"
+
+# Icon rendering mode: "ascii" or "braille" (braille has 4x the resolution but ascii is iconic and classic)
+icon_mode = "braille"

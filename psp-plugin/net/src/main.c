@@ -215,12 +215,33 @@ static int plugin_thread(SceSize args, void *argp) {
       }
     }
 
-    if (g_network_initialized && g_waiting_for_ack) {
-      if (network_poll_ack() > 0) {
+    /* Poll for incoming messages (ACK or icon request) */
+    if (g_network_initialized) {
+      char requested_game_id[10] = {0};
+      int msg_result = network_poll_message(requested_game_id);
+
+      if (msg_result == 1 && g_waiting_for_ack) {
+        /* ACK received */
         g_connected = 1;
         g_waiting_for_ack = 0;
         g_connect_start_us = 0;
         net_log("Desktop ACK received");
+      } else if (msg_result == 2 && g_connected && g_config.send_icons) {
+        /* Icon request received */
+        net_log("Icon requested for: %s", requested_game_id);
+        uint32_t icon_size = 0;
+        int icon_res = game_detect_get_icon(requested_game_id, g_icon_buffer,
+                                            ICON_BUFFER_SIZE, &icon_size);
+        if (icon_res == 0) {
+          if (network_send_icon(requested_game_id, g_icon_buffer, icon_size) ==
+              0) {
+            net_log("Icon sent on request (%u bytes)", (unsigned int)icon_size);
+          } else {
+            net_log("Icon send failed for request");
+          }
+        } else {
+          net_log("Icon load failed for request: %d", icon_res);
+        }
       }
     }
 

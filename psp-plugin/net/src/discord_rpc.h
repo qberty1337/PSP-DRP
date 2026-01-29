@@ -20,6 +20,7 @@
 #define MSG_ICON_CHUNK 0x03
 #define MSG_ICON_END 0x04
 #define MSG_ACK 0x10
+#define MSG_ICON_REQUEST 0x11
 #define MSG_DISCOVERY_REQUEST 0x20
 #define MSG_DISCOVERY_RESPONSE 0x21
 
@@ -90,6 +91,11 @@ typedef struct {
   char version[8];
   uint8_t battery_percent;
 } __attribute__((packed)) DiscoveryResponsePacket;
+
+/* Icon request packet (from desktop) */
+typedef struct {
+  char game_id[10];
+} __attribute__((packed)) IconRequestPacket;
 
 /* Packet header */
 typedef struct {
