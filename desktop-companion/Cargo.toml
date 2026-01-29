@@ -35,6 +35,13 @@ base64 = "0.21"
 # Date/time for usage tracking
 chrono = "0.4"
 
+# TUI (Terminal User Interface)
+ratatui = "0.29"
+crossterm = "0.28"
+
+# ASCII art generation from images
+artem = "2.0"
+
 [profile.release]
 strip = true
 lto = true

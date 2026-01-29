@@ -372,6 +372,32 @@ impl UsageTracker {
         }
         info!("Usage tracker: flushed all sessions");
     }
+
+    /// Get the most played game across all PSPs
+    /// Returns (title, total_seconds) if any games are tracked
+    pub fn get_most_played(&self) -> Option<(String, u64)> {
+        let data = self.load_data();
+        
+        let mut most_played: Option<(String, u64)> = None;
+        
+        for psp_data in data.psps.values() {
+            for game in psp_data.games.values() {
+                // Skip entries with no title
+                if game.title.is_empty() {
+                    continue;
+                }
+                
+                match &most_played {
+                    Some((_, secs)) if game.total_seconds <= *secs => {}
+                    _ => {
+                        most_played = Some((game.title.clone(), game.total_seconds));
+                    }
+                }
+            }
+        }
+        
+        most_played
+    }
 }
 
 /// Format a duration as human-readable string
