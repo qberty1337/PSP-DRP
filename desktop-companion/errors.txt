@@ -1,0 +1,217 @@
+﻿cargo :     Checking stable_deref_trait v1.2.1
+At line:1 char:1
++ cargo check 2>&1 | Out-File -FilePath errors.txt -Encoding 
+utf8; Get- ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking stable_ 
+   deref_trait v1.2.1:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+    Checking smallvec v1.15.1
+   Compiling strsim v0.11.1
+   Compiling windows-link v0.2.1
+   Compiling heck v0.5.0
+   Compiling find-msvc-tools v0.1.8
+   Compiling anstyle v1.0.13
+   Compiling once_cell_polyfill v1.70.2
+   Compiling utf8parse v0.2.2
+    Checking litemap v0.8.1
+    Checking writeable v0.6.2
+   Compiling shlex v1.3.0
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling icu_properties_data v2.1.2
+   Compiling icu_normalizer_data v2.1.1
+    Checking either v1.15.0
+   Compiling colorchoice v1.0.4
+    Checking zeroize v1.8.2
+   Compiling windows-sys v0.61.2
+   Compiling anstyle-parse v0.2.7
+    Checking aho-corasick v1.1.4
+   Compiling rustversion v1.0.22
+   Compiling clap_lex v0.7.7
+   Compiling windows_x86_64_msvc v0.52.6
+   Compiling windows_x86_64_msvc v0.48.5
+   Compiling cc v1.2.54
+    Checking rustls-pki-types v1.14.0
+    Checking anstyle-query v1.1.5
+   Compiling ident_case v1.0.1
+    Checking untrusted v0.9.0
+   Compiling winapi v0.3.9
+    Checking percent-encoding v2.3.2
+   Compiling syn v2.0.114
+    Checking anstyle-wincon v3.0.11
+   Compiling rustls v0.23.36
+    Checking utf8_iter v1.0.4
+   Compiling roff v0.2.2
+    Checking parking_lot_core v0.9.12
+   Compiling instability v0.3.11
+   Compiling paste v1.0.15
+    Checking foldhash v0.1.5
+    Checking allocator-api2 v0.2.21
+    Checking rayon v1.11.0
+   Compiling log v0.4.29
+    Checking subtle v2.6.1
+    Checking itertools v0.13.0
+    Checking unicode-segmentation v1.12.0
+    Checking ryu v1.0.22
+    Checking webpki-roots v1.0.5
+    Checking form_urlencoded v1.2.2
+    Checking unicode-width v0.1.14
+    Checking bitflags v2.10.0
+    Checking anstream v0.6.21
+    Checking windows-targets v0.52.6
+   Compiling indoc v2.0.7
+    Checking base64 v0.22.1
+    Checking static_assertions v1.1.0
+    Checking jiff v0.2.18
+    Checking unicode-width v0.2.0
+    Checking cassowary v0.3.0
+    Checking parking_lot v0.12.5
+    Checking windows-targets v0.48.5
+    Checking windows-sys v0.59.0
+    Checking webpki-roots v0.26.11
+    Checking windows-sys v0.48.0
+    Checking hashbrown v0.15.5
+    Checking clap_builder v4.5.55
+    Checking regex-automata v0.4.13
+    Checking castaway v0.2.4
+    Checking compact_str v0.8.1
+   Compiling ring v0.17.14
+    Checking lru v0.12.5
+    Checking colored v2.2.0
+    Checking terminal_size v0.3.0
+    Checking unicode-truncate v1.1.0
+    Checking clap v4.5.55
+    Checking jpeg-decoder v0.3.2
+    Checking tiff v0.9.1
+    Checking crossterm_winapi v0.9.1
+    Checking regex v1.12.2
+    Checking matchers v0.2.0
+    Checking crossterm v0.28.1
+    Checking env_filter v0.1.4
+    Checking env_logger v0.11.8
+   Compiling synstructure v0.13.2
+   Compiling darling_core v0.23.0
+   Compiling zerofrom-derive v0.1.6
+   Compiling yoke-derive v0.8.1
+   Compiling zerovec-derive v0.11.2
+   Compiling displaydoc v0.2.5
+   Compiling serde_derive v1.0.228
+   Compiling clap_derive v4.5.55
+   Compiling zerocopy-derive v0.8.34
+   Compiling tracing-attributes v0.1.31
+   Compiling strum_macros v0.26.4
+   Compiling tokio-macros v2.6.0
+   Compiling serde_repr v0.1.20
+   Compiling thiserror-impl v1.0.69
+    Checking rustls-webpki v0.103.9
+    Checking tokio v1.49.0
+    Checking zerofrom v0.1.6
+    Checking thiserror v1.0.69
+    Checking tracing v0.1.44
+    Checking zerocopy v0.8.34
+    Checking yoke v0.8.1
+    Checking tracing-subscriber v0.3.22
+   Compiling darling_macro v0.23.0
+    Checking strum v0.26.3
+    Checking zerovec v0.11.5
+    Checking zerotrie v0.2.3
+   Compiling clap_complete v4.5.65
+   Compiling clap_mangen v0.2.31
+   Compiling darling v0.23.0
+    Checking tinystr v0.8.2
+    Checking potential_utf v0.1.4
+    Checking icu_collections v2.1.1
+   Compiling artem v2.0.6
+    Checking icu_locale_core v2.1.1
+    Checking serde v1.0.228
+    Checking ratatui v0.29.0
+    Checking icu_provider v2.1.1
+    Checking serde_spanned v0.6.9
+    Checking toml_datetime v0.6.11
+    Checking discord-rich-presence v0.2.5
+    Checking icu_normalizer v2.1.1
+    Checking icu_properties v2.1.2
+    Checking toml_edit v0.22.27
+    Checking half v2.7.1
+    Checking idna_adapter v1.2.1
+    Checking exr v1.74.0
+    Checking idna v1.1.0
+    Checking url v2.5.8
+    Checking ureq v2.12.1
+    Checking toml v0.8.23
+    Checking image v0.24.9
+    Checking psp-drp v0.1.0 
+(Z:\0ProjectBackups\OTHER\PSP-DRP\desktop-companion)
+warning: unused import: `image::DynamicImage`
+ --> src\ascii_art.rs:7:5
+  |
+7 | use image::DynamicImage;
+  |     ^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) 
+on by default
+
+warning: unused import: `std::sync::Arc`
+ --> src\tui.rs:6:5
+  |
+6 | use std::sync::Arc;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `Widget`
+  --> src\tui.rs:19:42
+   |
+19 |     widgets::{Block, Borders, Paragraph, Widget, Wrap, 
+Clear},
+   |                                          ^^^^^^
+
+warning: unused import: `tokio::sync::RwLock`
+  --> src\tui.rs:22:5
+   |
+22 | use tokio::sync::RwLock;
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `info`
+  --> src\main.rs:14:22
+   |
+14 | use tracing::{error, info, warn, Level};
+   |                      ^^^^
+
+error[E0308]: mismatched types
+   --> src\ascii_art.rs:85:26
+    |
+ 85 |             .target_size(40)  // Width in characters
+    |              ----------- ^^ expected `NonZero<u32>`, found 
+integer
+    |              |
+    |              arguments to this method are incorrect
+    |
+    = note: expected struct `NonZero<u32>`
+                 found type `{integer}`
+note: method defined here
+   --> C:\Users\qbert\.cargo\registry\src\index.crates.io-1949cf8c
+6b5b557f\artem-2.0.6\src\config.rs:381:8
+    |
+381 |     => target_size, NonZeroU32, get
+    |        ^^^^^^^^^^^
+help: consider calling `NonZero::new`
+    |
+ 85 |             .target_size(NonZero::new(40).unwrap())  // 
+Width in characters
+    |                          +++++++++++++  ++++++++++
+
+warning: unused variable: `tui_state_discovery`
+   --> src\main.rs:153:13
+    |
+153 |         let tui_state_discovery = Arc::clone(&tui_state);
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is 
+intentional, prefix it with an underscore: `_tui_state_discovery`
+    |
+    = note: `#[warn(unused_variables)]` (part of 
+`#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain 
+E0308`.
+warning: `psp-drp` (bin "psp-drp") generated 6 warnings
+error: could not compile `psp-drp` (bin "psp-drp") due to 1 
+previous error; 6 warnings emitted

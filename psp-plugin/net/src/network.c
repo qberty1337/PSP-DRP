@@ -516,6 +516,7 @@ int network_send_game_info(const GameInfo *info) {
   packet.state = info->state;
   packet.has_icon = info->has_icon;
   packet.persistent = info->persistent;
+  copy_str(packet.psp_name, sizeof(packet.psp_name), info->psp_name);
 
   return send_packet(MSG_GAME_INFO, &packet, sizeof(packet));
 }
@@ -621,9 +622,11 @@ int network_handle_discovery(PluginConfig *config) {
   /* Build response */
   memset(&response, 0, sizeof(response));
 
-  /* Get PSP nickname */
-  if (sceUtilityGetSystemParamString(PSP_SYSTEMPARAM_ID_STRING_NICKNAME,
-                                     psp_name, sizeof(psp_name)) == 0) {
+  /* Use PSP name from config, or fall back to system nickname */
+  if (config != NULL && config->psp_name[0] != '\0') {
+    copy_str(response.psp_name, sizeof(response.psp_name), config->psp_name);
+  } else if (sceUtilityGetSystemParamString(PSP_SYSTEMPARAM_ID_STRING_NICKNAME,
+                                            psp_name, sizeof(psp_name)) == 0) {
     copy_str(response.psp_name, sizeof(response.psp_name), psp_name);
   } else {
     strcpy(response.psp_name, "PSP");

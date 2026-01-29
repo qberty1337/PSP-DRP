@@ -41,7 +41,8 @@ typedef struct {
   uint8_t state;       /* Current state (STATE_*) */
   uint8_t has_icon;    /* Whether icon data is available */
   uint8_t
-      persistent; /* Keep presence alive after disconnect (send_once mode) */
+      persistent;    /* Keep presence alive after disconnect (send_once mode) */
+  char psp_name[32]; /* PSP name from config */
 } GameInfo;
 
 /* Heartbeat packet */
@@ -58,6 +59,7 @@ typedef struct {
   uint8_t state;
   uint8_t has_icon;
   uint8_t persistent;
+  char psp_name[32]; /* PSP name from config */
 } __attribute__((packed)) GameInfoPacket;
 
 /* Icon chunk packet */

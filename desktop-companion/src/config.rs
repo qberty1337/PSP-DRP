@@ -12,6 +12,10 @@ pub struct Config {
 
     /// Display settings
     pub display: DisplayConfig,
+
+    /// Usage tracking settings
+    #[serde(default)]
+    pub usage: UsageConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +67,17 @@ pub struct DisplayConfig {
     pub log_level: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageConfig {
+    /// Enable usage tracking (logs game sessions to a file)
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Path to the usage log file (default: usage_log.txt beside executable)
+    #[serde(default)]
+    pub log_path: Option<String>,
+}
+
 // Default value functions
 fn default_true() -> bool {
     true
@@ -105,6 +120,16 @@ impl Default for Config {
                 show_tray_icon: true,
                 log_level: default_log_level(),
             },
+            usage: UsageConfig::default(),
+        }
+    }
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            log_path: None,
         }
     }
 }

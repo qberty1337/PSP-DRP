@@ -113,6 +113,7 @@ pub struct GameInfo {
     pub state: PspState,
     pub has_icon: bool,
     pub persistent: bool,
+    pub psp_name: String,
 }
 
 impl GameInfo {
@@ -142,6 +143,13 @@ impl GameInfo {
         // Read persistent (1 byte) - for send_once mode
         let persistent = if data.len() > 144 { data[144] != 0 } else { false };
 
+        // Read psp_name (32 bytes starting at offset 145)
+        let psp_name = if data.len() >= 177 {
+            read_string(&data[145..177])
+        } else {
+            String::new()
+        };
+
         Ok(Self {
             game_id,
             title,
@@ -149,6 +157,7 @@ impl GameInfo {
             state,
             has_icon,
             persistent,
+            psp_name,
         })
     }
 }
