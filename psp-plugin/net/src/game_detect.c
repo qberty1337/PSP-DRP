@@ -30,6 +30,8 @@ static uint32_t get_unix_time(void);
 static void copy_str(char *dst, size_t dst_size, const char *src);
 static int build_path(char *out, size_t out_size, const char *base,
                       const char *name, const char *suffix);
+static int is_umd_game_id(const char *id);
+static int try_read_sfo_with_diag(const char *path, SfoData *sfo);
 
 /**
  * Initialize game detection
@@ -188,7 +190,12 @@ static int detect_umd_game(GameInfo *info) {
     return -1;
   }
 
-  copy_str(info->game_id, sizeof(info->game_id), sfo.disc_id);
+  /* Use disc_id if available, otherwise fall back to title_id */
+  if (sfo.disc_id[0] != '\0') {
+    copy_str(info->game_id, sizeof(info->game_id), sfo.disc_id);
+  } else if (sfo.title_id[0] != '\0') {
+    copy_str(info->game_id, sizeof(info->game_id), sfo.title_id);
+  }
   copy_str(info->title, sizeof(info->title), sfo.title);
 
   /* Check for icon */
@@ -208,15 +215,40 @@ static int detect_umd_game(GameInfo *info) {
 static int detect_iso_game(GameInfo *info) {
   SfoData sfo;
   SceUID fd;
+  int i;
 
-  /* Check if ISO is mounted (usually at disc0: like UMD via ARK/Inferno) */
-  /* Try alternate mount points used by some plugins */
-  const char *iso_mounts[] = {"host0:/PSP_GAME/PARAM.SFO",
-                              "umd0:/PSP_GAME/PARAM.SFO", NULL};
+  net_log("detect_iso: checking mount points");
 
-  for (int i = 0; iso_mounts[i] != NULL; i++) {
-    if (sfo_parse_file(iso_mounts[i], &sfo) == 0) {
-      copy_str(info->game_id, sizeof(info->game_id), sfo.disc_id);
+  /* Check if ISO is mounted - ARK-4/Inferno mount to disc0: */
+  /* Try multiple mount points used by various CFW plugins */
+  const char *iso_mounts[] = {
+      "disc0:/PSP_GAME/PARAM.SFO", /* ARK-4, Inferno, standard UMD mount */
+      "umd0:/PSP_GAME/PARAM.SFO",  /* Alternative UMD mount */
+      "host0:/PSP_GAME/PARAM.SFO", /* Host filesystem mount */
+      "umd1:/PSP_GAME/PARAM.SFO",  /* Secondary UMD mount */
+      NULL};
+
+  for (i = 0; iso_mounts[i] != NULL; i++) {
+    /* Use diagnostic reader to understand failures */
+    if (try_read_sfo_with_diag(iso_mounts[i], &sfo) == 0) {
+      /* Prefer title_id for UMD/ISO games (format XXXX#####) */
+      const char *game_id = NULL;
+
+      /* Check title_id first - UMD games always have this in proper format */
+      if (sfo.title_id[0] != '\0' && is_umd_game_id(sfo.title_id)) {
+        game_id = sfo.title_id;
+        net_log("detect_iso: using title_id (UMD format): %s", game_id);
+      } else if (sfo.disc_id[0] != '\0') {
+        game_id = sfo.disc_id;
+        net_log("detect_iso: using disc_id: %s", game_id);
+      } else if (sfo.title_id[0] != '\0') {
+        game_id = sfo.title_id;
+        net_log("detect_iso: using title_id: %s", game_id);
+      }
+
+      if (game_id != NULL) {
+        copy_str(info->game_id, sizeof(info->game_id), game_id);
+      }
       copy_str(info->title, sizeof(info->title), sfo.title);
 
       /* Extract base path for icon */
@@ -242,6 +274,7 @@ static int detect_iso_game(GameInfo *info) {
     }
   }
 
+  net_log("detect_iso: no mount points accessible");
   return -1;
 }
 
@@ -268,8 +301,12 @@ static int detect_eboot_game(GameInfo *info) {
   for (int i = 0; eboot_mounts[i] != NULL; i++) {
     net_log("detect_eboot: trying %s", eboot_mounts[i]);
     if (sfo_parse_file(eboot_mounts[i], &sfo) == 0) {
-      net_log("detect_eboot: found! id=%s title=%s", sfo.disc_id, sfo.title);
-      copy_str(info->game_id, sizeof(info->game_id), sfo.disc_id);
+      /* Use disc_id if available, otherwise fall back to title_id */
+      const char *game_id_src = (sfo.disc_id[0] != '\0')    ? sfo.disc_id
+                                : (sfo.title_id[0] != '\0') ? sfo.title_id
+                                                            : "";
+      net_log("detect_eboot: found! id=%s title=%s", game_id_src, sfo.title);
+      copy_str(info->game_id, sizeof(info->game_id), game_id_src);
       copy_str(info->title, sizeof(info->title), sfo.title);
 
       /* Extract base path for icon */
@@ -311,8 +348,6 @@ static int detect_module_game(GameInfo *info) {
   SceKernelModuleInfo mod_info;
   SfoData sfo;
   char sfo_path[256];
-  int j;
-  int has_underscore;
 
   net_log("detect_module: enumerating modules");
 
@@ -351,17 +386,22 @@ static int detect_module_game(GameInfo *info) {
       continue;
     }
 
-    /* Check for underscore - modules with underscores are usually plugins */
-    has_underscore = 0;
-    for (j = 0; mod_info.name[j] != '\0'; j++) {
-      if (mod_info.name[j] == '_') {
-        has_underscore = 1;
-        break;
+    /* Skip common plugin/library suffixes that indicate non-game modules */
+    {
+      int name_len = strlen(mod_info.name);
+      /* Skip modules ending with _Library, _Module, _Driver */
+      if (name_len > 8 &&
+          strcmp(mod_info.name + name_len - 8, "_Library") == 0) {
+        continue;
       }
-    }
-
-    if (has_underscore) {
-      continue;
+      if (name_len > 7 &&
+          strcmp(mod_info.name + name_len - 7, "_Module") == 0) {
+        continue;
+      }
+      if (name_len > 7 &&
+          strcmp(mod_info.name + name_len - 7, "_Driver") == 0) {
+        continue;
+      }
     }
 
     /* This module looks like a game! Use its name directly as the title */
@@ -413,9 +453,42 @@ static int detect_module_game(GameInfo *info) {
       return 0;
     }
 
-    /* No PARAM.SFO found, but we identified a game module - use module name as
-     * title */
-    net_log("detect_module: using module name as title: %s", mod_info.name);
+    /* For ISO games, the PARAM.SFO won't be in ms0:/PSP/GAME/ - try disc0: */
+    net_log("detect_module: trying disc0 for ISO game info");
+    if (sfo_parse_file("disc0:/PSP_GAME/PARAM.SFO", &sfo) == 0) {
+      /* Use title_id for UMD/ISO games (format XXXX#####) */
+      const char *game_id = NULL;
+      if (sfo.title_id[0] != '\0' && is_umd_game_id(sfo.title_id)) {
+        game_id = sfo.title_id;
+      } else if (sfo.disc_id[0] != '\0') {
+        game_id = sfo.disc_id;
+      } else if (sfo.title_id[0] != '\0') {
+        game_id = sfo.title_id;
+      }
+
+      if (game_id != NULL) {
+        copy_str(info->game_id, sizeof(info->game_id), game_id);
+      } else {
+        copy_str(info->game_id, sizeof(info->game_id), mod_info.name);
+      }
+      copy_str(info->title, sizeof(info->title), sfo.title);
+
+      net_log("detect_module: found ISO info! id=%s title=%s", info->game_id,
+              info->title);
+
+      /* Try icon from disc0 */
+      copy_str(g_game_path, sizeof(g_game_path), "disc0:/PSP_GAME");
+      SceUID fd = sceIoOpen("disc0:/PSP_GAME/ICON0.PNG", PSP_O_RDONLY, 0);
+      if (fd >= 0) {
+        info->has_icon = 1;
+        sceIoClose(fd);
+      }
+
+      return 0;
+    }
+
+    /* No PARAM.SFO found anywhere - use module name as fallback */
+    net_log("detect_module: using module name as fallback: %s", mod_info.name);
     copy_str(info->game_id, sizeof(info->game_id), mod_info.name);
     copy_str(info->title, sizeof(info->title), mod_info.name);
     info->has_icon = 0;
@@ -597,4 +670,82 @@ int game_detect_get_icon(const char *game_id, uint8_t *buffer,
   sceIoClose(fd);
 
   return (*icon_size > 0) ? 0 : -1;
+}
+
+/**
+ * Check if a game ID matches UMD/ISO format
+ * Format: 4 uppercase letters + optional hyphen + 5 digits
+ * Examples: ULUS12345, ULUS-12345, UCUS98765, NPUH10001
+ */
+static int is_umd_game_id(const char *id) {
+  int i;
+  int pos = 0;
+
+  if (id == NULL || id[0] == '\0') {
+    return 0;
+  }
+
+  /* First 4 characters must be uppercase letters */
+  for (i = 0; i < 4; i++) {
+    if (id[pos] < 'A' || id[pos] > 'Z') {
+      return 0;
+    }
+    pos++;
+  }
+
+  /* Optional hyphen */
+  if (id[pos] == '-') {
+    pos++;
+  }
+
+  /* Next 5 characters must be digits */
+  for (i = 0; i < 5; i++) {
+    if (id[pos] < '0' || id[pos] > '9') {
+      return 0;
+    }
+    pos++;
+  }
+
+  /* Should end here or be null-terminated */
+  return (id[pos] == '\0' || id[pos] == ' ');
+}
+
+/**
+ * Try to read SFO with diagnostic logging
+ * Returns 0 on success, logs detailed error info on failure
+ */
+static int try_read_sfo_with_diag(const char *path, SfoData *sfo) {
+  SceUID fd;
+  SceIoStat stat;
+  int ret;
+
+  /* First check if file exists and get size */
+  ret = sceIoGetstat(path, &stat);
+  if (ret < 0) {
+    net_log("sfo_diag: getstat '%s' failed ret=0x%08X", path, ret);
+    return -1;
+  }
+
+  net_log("sfo_diag: '%s' size=%d", path, (int)stat.st_size);
+
+  /* Try to open */
+  fd = sceIoOpen(path, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    net_log("sfo_diag: open '%s' failed fd=0x%08X", path, fd);
+    return -1;
+  }
+
+  sceIoClose(fd);
+
+  /* Now try full parse */
+  ret = sfo_parse_file(path, sfo);
+  if (ret < 0) {
+    net_log("sfo_diag: parse '%s' failed ret=%d", path, ret);
+    return -1;
+  }
+
+  net_log("sfo_diag: success disc_id='%s' title_id='%s' title='%s'",
+          sfo->disc_id, sfo->title_id, sfo->title);
+
+  return 0;
 }
