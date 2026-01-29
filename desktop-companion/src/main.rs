@@ -331,6 +331,12 @@ async fn handle_server_event(
         ServerEvent::GameInfoUpdated { addr, info } => {
             let mut state = tui_state.write().await;
             
+            // Start session if not already started (handles direct connections without discovery)
+            if state.session_start.is_none() {
+                state.session_start = Some(Instant::now());
+                state.psp_addr = Some(addr);
+            }
+            
             // Check if game changed
             let game_changed = state.current_game.as_ref()
                 .map(|g| g.game_id != info.game_id)
