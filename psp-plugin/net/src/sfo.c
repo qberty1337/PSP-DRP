@@ -4,7 +4,6 @@
 
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "network.h" /* For net_log debug logging */
@@ -117,53 +116,77 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
 }
 
 /**
- * Parse an SFO file
+ * Parse an SFO file with detailed diagnostics
  */
 int sfo_parse_file(const char *path, SfoData *data) {
   SceUID fd;
   SceIoStat stat;
-  uint8_t *buffer = NULL;
+  static uint8_t
+      buffer[1024]; /* Static buffer - SFO files are typically <1KB */
   int result = -1;
+  int bytes_read;
+  int retry;
+  int max_retries = 1;
 
   if (path == NULL || data == NULL) {
     return -1;
   }
 
-  /* Get file size */
-  if (sceIoGetstat(path, &stat) < 0) {
-    return -1;
+  /* For disc0: paths, retry with delay to handle timing issues */
+  if (strncmp(path, "disc0:", 6) == 0) {
+    max_retries = 3;
   }
 
-  /* Sanity check size */
-  if (stat.st_size < sizeof(SfoHeader) || stat.st_size > 64 * 1024) {
-    return -1;
-  }
+  for (retry = 0; retry < max_retries; retry++) {
+    if (retry > 0) {
+      /* Wait before retry - give filesystem time to settle */
+      sceKernelDelayThread(100 * 1000); /* 100ms */
+      net_log("sfo_file: retry %d for %s", retry + 1, path);
+    }
 
-  /* Allocate buffer */
-  buffer = (uint8_t *)malloc(stat.st_size);
-  if (buffer == NULL) {
-    return -1;
-  }
+    /* Get file size */
+    if (sceIoGetstat(path, &stat) < 0) {
+      continue;
+    }
 
-  /* Open and read file */
-  fd = sceIoOpen(path, PSP_O_RDONLY, 0);
-  if (fd < 0) {
-    goto cleanup;
-  }
+    /* Sanity check size - must fit in our static buffer */
+    if (stat.st_size < sizeof(SfoHeader) || stat.st_size > sizeof(buffer)) {
+      net_log("sfo_file: size %d too large (max %d)", (int)stat.st_size,
+              (int)sizeof(buffer));
+      return -1;
+    }
 
-  if (sceIoRead(fd, buffer, stat.st_size) != stat.st_size) {
+    /* Open file */
+    fd = sceIoOpen(path, PSP_O_RDONLY, 0);
+    if (fd < 0) {
+      net_log("sfo_file: open failed fd=0x%08X", fd);
+      continue;
+    }
+
+    /* Read file */
+    bytes_read = sceIoRead(fd, buffer, stat.st_size);
     sceIoClose(fd);
-    goto cleanup;
-  }
 
-  sceIoClose(fd);
+    if (bytes_read != stat.st_size) {
+      net_log("sfo_file: read returned %d, expected %d", bytes_read,
+              (int)stat.st_size);
+      continue;
+    }
 
-  /* Parse the buffer */
-  result = sfo_parse_buffer(buffer, stat.st_size, data);
+    /* Check first bytes for debugging */
+    if (stat.st_size >= 4) {
+      net_log("sfo_file: first bytes: %02X %02X %02X %02X", buffer[0],
+              buffer[1], buffer[2], buffer[3]);
+    }
 
-cleanup:
-  if (buffer) {
-    free(buffer);
+    /* Parse the buffer */
+    result = sfo_parse_buffer(buffer, stat.st_size, data);
+
+    if (result == 0) {
+      return 0; /* Success */
+    }
+
+    net_log("sfo_file: parse returned %d", result);
   }
 
   return result;
