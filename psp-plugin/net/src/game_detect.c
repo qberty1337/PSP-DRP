@@ -455,7 +455,18 @@ static int detect_module_game(GameInfo *info) {
 
     /* For ISO games, the PARAM.SFO won't be in ms0:/PSP/GAME/ - try disc0: */
     net_log("detect_module: trying disc0 for ISO game info");
-    if (sfo_parse_file("disc0:/PSP_GAME/PARAM.SFO", &sfo) == 0) {
+
+    /* Check if disc0 directory is accessible first */
+    SceUID disc_dir = sceIoDopen("disc0:/PSP_GAME");
+    if (disc_dir >= 0) {
+      net_log("detect_module: disc0:/PSP_GAME is accessible");
+      sceIoDclose(disc_dir);
+    } else {
+      net_log("detect_module: disc0:/PSP_GAME not accessible: 0x%08X",
+              disc_dir);
+    }
+
+    if (try_read_sfo_with_diag("disc0:/PSP_GAME/PARAM.SFO", &sfo) == 0) {
       /* Use title_id for UMD/ISO games (format XXXX#####) */
       const char *game_id = NULL;
       if (sfo.title_id[0] != '\0' && is_umd_game_id(sfo.title_id)) {
@@ -479,6 +490,38 @@ static int detect_module_game(GameInfo *info) {
       /* Try icon from disc0 */
       copy_str(g_game_path, sizeof(g_game_path), "disc0:/PSP_GAME");
       SceUID fd = sceIoOpen("disc0:/PSP_GAME/ICON0.PNG", PSP_O_RDONLY, 0);
+      if (fd >= 0) {
+        info->has_icon = 1;
+        sceIoClose(fd);
+      }
+
+      return 0;
+    }
+
+    /* Try umd0: as fallback (used by some loaders) */
+    net_log("detect_module: trying umd0 for ISO game info");
+    if (try_read_sfo_with_diag("umd0:/PSP_GAME/PARAM.SFO", &sfo) == 0) {
+      const char *game_id = NULL;
+      if (sfo.title_id[0] != '\0' && is_umd_game_id(sfo.title_id)) {
+        game_id = sfo.title_id;
+      } else if (sfo.disc_id[0] != '\0') {
+        game_id = sfo.disc_id;
+      } else if (sfo.title_id[0] != '\0') {
+        game_id = sfo.title_id;
+      }
+
+      if (game_id != NULL) {
+        copy_str(info->game_id, sizeof(info->game_id), game_id);
+      } else {
+        copy_str(info->game_id, sizeof(info->game_id), mod_info.name);
+      }
+      copy_str(info->title, sizeof(info->title), sfo.title);
+
+      net_log("detect_module: found ISO info from umd0! id=%s title=%s",
+              info->game_id, info->title);
+
+      copy_str(g_game_path, sizeof(g_game_path), "umd0:/PSP_GAME");
+      SceUID fd = sceIoOpen("umd0:/PSP_GAME/ICON0.PNG", PSP_O_RDONLY, 0);
       if (fd >= 0) {
         info->has_icon = 1;
         sceIoClose(fd);
