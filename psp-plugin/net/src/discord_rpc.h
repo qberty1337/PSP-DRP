@@ -40,6 +40,8 @@ typedef struct {
   uint32_t start_time; /* Unix timestamp when game started */
   uint8_t state;       /* Current state (STATE_*) */
   uint8_t has_icon;    /* Whether icon data is available */
+  uint8_t
+      persistent; /* Keep presence alive after disconnect (send_once mode) */
 } GameInfo;
 
 /* Heartbeat packet */
@@ -55,6 +57,7 @@ typedef struct {
   uint32_t start_time;
   uint8_t state;
   uint8_t has_icon;
+  uint8_t persistent;
 } __attribute__((packed)) GameInfoPacket;
 
 /* Icon chunk packet */

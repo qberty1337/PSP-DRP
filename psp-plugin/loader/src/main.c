@@ -23,6 +23,8 @@ PSP_MODULE_INFO(LOADER_MODULE_NAME, PSP_MODULE_USER, 1, 0);
 
 #define RPC_START_MAGIC 0x31504352
 
+static int g_logging_enabled = 0;
+
 #ifndef START_PROFILE_ID
 #define START_PROFILE_ID 1
 #endif
@@ -57,6 +59,10 @@ static void loader_log_raw(const char *msg) {
   SceUID fd;
   int len = 0;
   int prefix_len = 0;
+
+  if (!g_logging_enabled) {
+    return;
+  }
 
   if (msg == NULL) {
     return;
@@ -229,6 +235,64 @@ static unsigned int load_skip_button(void) {
   return DEFAULT_SKIP_BUTTON;
 }
 
+static void load_logging_enabled(void) {
+  char buf[2048];
+  int len;
+  char *line;
+  char *next;
+  SceUID fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    g_logging_enabled = 0;
+    return;
+  }
+  len = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (len <= 0) {
+    g_logging_enabled = 0;
+    return;
+  }
+  buf[len] = '\0';
+  line = buf;
+  while (*line != '\0') {
+    char *p = line;
+    char *eq = NULL;
+    next = strchr(line, '\n');
+    if (next != NULL) {
+      *next = '\0';
+      next++;
+    }
+
+    while (*p == ' ' || *p == '\t' || *p == '\r') {
+      p++;
+    }
+    if (*p == '#' || *p == ';' || *p == '\0') {
+      line = (next != NULL) ? next : (line + strlen(line));
+      continue;
+    }
+
+    eq = strchr(p, '=');
+    if (eq != NULL) {
+      char *key_end = eq - 1;
+      char *val = eq + 1;
+      while (key_end > p && (*key_end == ' ' || *key_end == '\t')) {
+        *key_end-- = '\0';
+      }
+      *eq = '\0';
+      while (*val == ' ' || *val == '\t') {
+        val++;
+      }
+      if (token_equals(p, "ENABLE_LOGGING")) {
+        g_logging_enabled = (*val == '1') ? 1 : 0;
+        return;
+      }
+    }
+
+    line = (next != NULL) ? next : (line + strlen(line));
+  }
+
+  g_logging_enabled = 0;
+}
+
 static int load_net_plugin(void) {
   char msg[12];
   char hex[9];
@@ -332,6 +396,8 @@ static int auto_start_thread(SceSize args, void *argp) {
 int module_start(SceSize args, void *argp) {
   (void)args;
   (void)argp;
+
+  load_logging_enabled();
 
   loader_log_raw("module_start called");
 

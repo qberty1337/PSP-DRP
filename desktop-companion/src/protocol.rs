@@ -112,6 +112,7 @@ pub struct GameInfo {
     pub start_time: u32,
     pub state: PspState,
     pub has_icon: bool,
+    pub persistent: bool,
 }
 
 impl GameInfo {
@@ -138,12 +139,16 @@ impl GameInfo {
         // Read has_icon (1 byte)
         let has_icon = data[143] != 0;
 
+        // Read persistent (1 byte) - for send_once mode
+        let persistent = if data.len() > 144 { data[144] != 0 } else { false };
+
         Ok(Self {
             game_id,
             title,
             start_time,
             state,
             has_icon,
+            persistent,
         })
     }
 }

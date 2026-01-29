@@ -46,6 +46,7 @@ struct PspConnection {
     current_game: Option<GameInfo>,
     icon_buffer: HashMap<String, IconBuffer>,
     discovery_sent: bool,
+    persistent: bool,
 }
 
 /// Buffer for receiving icon chunks
@@ -142,6 +143,10 @@ impl Server {
                 let mut to_remove = Vec::new();
 
                 for (addr, conn) in conns.iter() {
+                    // Skip timeout for persistent connections (send_once mode)
+                    if conn.persistent {
+                        continue;
+                    }
                     if now.duration_since(conn.last_seen).as_secs() > timeout_secs {
                         to_remove.push(*addr);
                     }
@@ -217,6 +222,11 @@ impl Server {
                     if let Some(conn) = conns.get_mut(&addr) {
                         conn.last_seen = Instant::now();
                         conn.current_game = Some(info.clone());
+                        // If PSP sent persistent flag (send_once mode), mark connection
+                        if info.persistent {
+                            conn.persistent = true;
+                            info!("PSP {} marked as persistent (send_once mode)", conn.name);
+                        }
                     }
                 }
 
@@ -264,6 +274,7 @@ impl Server {
                                 current_game: None,
                                 icon_buffer: HashMap::new(),
                                 discovery_sent: true,
+                                persistent: false,
                             },
                         );
                     }
@@ -308,6 +319,7 @@ impl Server {
                 current_game: None,
                 icon_buffer: HashMap::new(),
                 discovery_sent: auto,
+                persistent: false,
             },
         );
         auto

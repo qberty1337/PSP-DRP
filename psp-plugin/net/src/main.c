@@ -319,6 +319,8 @@ static int plugin_thread(SceSize args, void *argp) {
 
         if (should_send) {
           int icon_needed = g_game_changed;
+          /* Set persistent flag for send_once mode */
+          g_current_game.persistent = g_config.send_once ? 1 : 0;
           if (network_send_game_info(&g_current_game) >= 0) {
             if (icon_needed && g_config.send_icons && g_current_game.has_icon) {
               if (strncmp(g_last_icon_id, g_current_game.game_id,
