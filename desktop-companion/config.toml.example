@@ -27,7 +27,7 @@ auto_discovery = true
 discovery_interval = 30
 
 # Timeout before considering PSP disconnected (seconds)
-timeout_seconds = 90
+timeout_seconds = 160
 
 [display]
 # Show system tray icon (not yet implemented)
