@@ -111,12 +111,18 @@ impl DiscordManager {
             }
         }
         
-        // Add assets - use thumbnail URL if provided, otherwise fall back to static asset
-        let large_image = thumbnail_url.unwrap_or("psp_logo");
-        let large_text = if thumbnail_url.is_some() {
-            game_info.title.as_str()
+        // Add assets - use thumbnail URL if provided, XMB image for XMB, otherwise fall back to static asset
+        const XMB_IMAGE_URL: &str = "https://qberty.com/xmb.png";
+        
+        let (large_image, large_text): (&str, &str) = if game_info.state == PspState::Xmb {
+            // Browsing XMB - use XMB screenshot
+            (XMB_IMAGE_URL, "XrossMediaBar")
+        } else if let Some(url) = thumbnail_url {
+            // Playing a game with a matched thumbnail
+            (url, game_info.title.as_str())
         } else {
-            "PlayStation Portable"
+            // Fallback to PSP logo
+            ("psp_logo", "PlayStation Portable")
         };
         
         let assets = activity::Assets::new()
@@ -159,14 +165,18 @@ impl DiscordManager {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| anyhow::anyhow!("Not connected to Discord"))?;
         
+        const XMB_IMAGE_URL: &str = "https://qberty.com/xmb.png";
+        
         let state_text = format!("on {}", psp_name);
         let activity = activity::Activity::new()
             .details("Browsing XMB")
             .state(&state_text)
             .assets(
                 activity::Assets::new()
-                    .large_image("psp_logo")
-                    .large_text("PlayStation Portable")
+                    .large_image(XMB_IMAGE_URL)
+                    .large_text("XrossMediaBar")
+                    .small_image("psp_logo")
+                    .small_text("PlayStation Portable")
             );
         
         match client.set_activity(activity) {
