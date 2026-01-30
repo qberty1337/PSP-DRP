@@ -8,6 +8,7 @@ mod config;
 mod discord;
 mod protocol;
 mod server;
+mod thumbnail_matcher;
 mod tui;
 mod usage_tracker;
 
@@ -23,6 +24,7 @@ use ascii_art::{IconManager, IconMode};
 use config::Config;
 use discord::DiscordManager;
 use server::{Server, ServerCommand, ServerEvent};
+use thumbnail_matcher::ThumbnailMatcher;
 use tui::{Tui, TuiEvent, TuiState};
 use usage_tracker::UsageTracker;
 
@@ -139,6 +141,27 @@ async fn main() -> Result<()> {
     let icon_mode = IconMode::from(config.display.icon_mode.as_str());
     let mut icon_manager = IconManager::new_with_mode(icon_mode);
 
+    // Initialize thumbnail matcher for Discord game icons
+    let thumbnail_matcher = Arc::new(ThumbnailMatcher::new());
+    
+    // Load thumbnail index in background
+    {
+        let matcher = thumbnail_matcher.clone();
+        let tui_state_clone = tui_state.clone();
+        tokio::spawn(async move {
+            match matcher.load_index().await {
+                Ok(count) => {
+                    let mut state = tui_state_clone.write().await;
+                    state.log_info(&format!("Loaded {} game thumbnails from libretro", count));
+                }
+                Err(e) => {
+                    let mut state = tui_state_clone.write().await;
+                    state.log_warn(&format!("Failed to load thumbnails: {}", e));
+                }
+            }
+        });
+    }
+
     // Create server event channel
     let (event_tx, mut event_rx) = mpsc::channel::<ServerEvent>(100);
 
@@ -193,6 +216,7 @@ async fn main() -> Result<()> {
                     &mut usage_tracker,
                     &mut icon_manager,
                     &server_cmd_tx,
+                    &thumbnail_matcher,
                 ).await;
             }
 
@@ -292,6 +316,7 @@ async fn handle_server_event(
     usage_tracker: &mut UsageTracker,
     icon_manager: &mut IconManager,
     server_cmd_tx: &mpsc::Sender<ServerCommand>,
+    thumbnail_matcher: &Arc<ThumbnailMatcher>,
 ) {
     match event {
         ServerEvent::PspConnected { addr, name, battery } => {
@@ -398,8 +423,17 @@ async fn handle_server_event(
                     .collect();
             }
             
-            // Update Discord presence
-            if let Err(e) = discord.update_presence(&info).await {
+            // Update Discord presence with thumbnail lookup
+            let thumbnail_url = thumbnail_matcher.find_thumbnail(&info.game_id, &info.title).await;
+            if let Some(ref _url) = thumbnail_url {
+                if game_changed {
+                    state.log_info(&format!("Found thumbnail for {}", info.title));
+                }
+            }
+            drop(state); // Release lock before async Discord call
+            
+            if let Err(e) = discord.update_presence(&info, thumbnail_url.as_deref()).await {
+                let mut state = tui_state.write().await;
                 state.log_warn(&format!("Discord error: {}", e));
             }
         }

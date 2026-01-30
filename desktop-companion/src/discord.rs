@@ -69,7 +69,8 @@ impl DiscordManager {
     }
     
     /// Update presence with game info
-    pub async fn update_presence(&mut self, game_info: &GameInfo) -> Result<()> {
+    /// If thumbnail_url is provided, it will be used as the large image
+    pub async fn update_presence(&mut self, game_info: &GameInfo, thumbnail_url: Option<&str>) -> Result<()> {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| anyhow::anyhow!("Not connected to Discord"))?;
         
@@ -110,13 +111,19 @@ impl DiscordManager {
             }
         }
         
-        // Add assets
-        let large_image_key = format!("game_{}", game_info.game_id.to_lowercase());
+        // Add assets - use thumbnail URL if provided, otherwise fall back to static asset
+        let large_image = thumbnail_url.unwrap_or("psp_logo");
+        let large_text = if thumbnail_url.is_some() {
+            game_info.title.as_str()
+        } else {
+            "PlayStation Portable"
+        };
+        
         let assets = activity::Assets::new()
-            .large_image("psp_logo")
-            .large_text("PlayStation Portable")
-            .small_image(&large_image_key)
-            .small_text(&game_info.title);
+            .large_image(large_image)
+            .large_text(large_text)
+            .small_image("psp_logo")
+            .small_text("PlayStation Portable");
         
         activity_builder = activity_builder.assets(assets);
         
