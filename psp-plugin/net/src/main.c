@@ -172,10 +172,11 @@ static int plugin_thread(SceSize args, void *argp) {
 
       /* Check for game-specific startup delay */
       game_specific_delay = config_get_game_startup_delay(early_game_id);
-      if (game_specific_delay > 0) {
-        net_log("Game-specific delay: %d ms", game_specific_delay);
-        /* Apply additional delay (the loader already waited startup_delay_ms,
-         * so this is the game-specific override that the user set) */
+      net_log("Game delay lookup for %s: %d", early_game_id,
+              game_specific_delay);
+      if (game_specific_delay >= 0) {
+        net_log("Applying game-specific delay: %d ms", game_specific_delay);
+        /* Apply the game-specific delay */
         sceKernelDelayThread(game_specific_delay * 1000);
       }
     }

@@ -314,11 +314,14 @@ static int parse_bool(const char *value) {
  */
 int config_get_game_startup_delay(const char *game_id) {
   SceUID fd;
-  char buffer[2048];
-  char target_key[32];
-  char line[128];
+  char buffer[4096];
+  char target_key[48];
   int bytes_read;
-  int i, j;
+  char *found;
+  char *eq;
+  char *val_start;
+  char *line_start;
+  int delay;
 
   if (game_id == NULL || game_id[0] == '\0') {
     return -1;
@@ -341,60 +344,60 @@ int config_get_game_startup_delay(const char *game_id) {
 
   buffer[bytes_read] = '\0';
 
-  /* Parse line by line looking for our key */
-  j = 0;
-  for (i = 0; i <= bytes_read; i++) {
-    if (buffer[i] == '\n' || buffer[i] == '\r' || buffer[i] == '\0') {
-      line[j] = '\0';
-      if (j > 0) {
-        /* Check if this line has our key */
-        const char *eq = strchr(line, '=');
-        if (eq != NULL) {
-          char key[32];
-          char value[16];
-          int key_len = eq - line;
-          int value_len;
+  /* Search for the key in the buffer */
+  found = strstr(buffer, target_key);
+  while (found != NULL) {
+    /* Check if this occurrence is at the start of a line (not a comment) */
+    line_start = found;
 
-          if (key_len >= (int)sizeof(key)) {
-            key_len = sizeof(key) - 1;
-          }
-          strncpy(key, line, key_len);
-          key[key_len] = '\0';
-          trim_whitespace(key);
-
-          /* Check if this is our target key */
-          if (strcmp(key, target_key) == 0) {
-            value_len = strlen(eq + 1);
-            if (value_len >= (int)sizeof(value)) {
-              value_len = sizeof(value) - 1;
-            }
-            strncpy(value, eq + 1, value_len);
-            value[value_len] = '\0';
-            trim_whitespace(value);
-
-            /* If empty value, return -1 (user needs to fill it in) */
-            if (value[0] == '\0') {
-              return -1;
-            }
-
-            /* Parse and return the delay */
-            int delay = atoi(value);
-            if (delay > 0) {
-              return delay;
-            }
-            return -1;
-          }
-        }
-      }
-      j = 0;
-
-      /* Skip \r\n sequences */
-      if (buffer[i] == '\r' && buffer[i + 1] == '\n') {
-        i++;
-      }
-    } else if (j < (int)sizeof(line) - 1) {
-      line[j++] = buffer[i];
+    /* Walk backwards to find line start */
+    while (line_start > buffer && *(line_start - 1) != '\n' &&
+           *(line_start - 1) != '\r') {
+      line_start--;
     }
+
+    /* Skip whitespace at line start */
+    while (*line_start == ' ' || *line_start == '\t') {
+      line_start++;
+    }
+
+    /* If line starts with ; or #, it's a comment - skip */
+    if (*line_start == ';' || *line_start == '#') {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Make sure the key starts at the beginning of the non-comment part */
+    if (line_start != found) {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Find the = after the key */
+    eq = strchr(found, '=');
+    if (eq == NULL) {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Get the value after = */
+    val_start = eq + 1;
+    while (*val_start == ' ' || *val_start == '\t') {
+      val_start++;
+    }
+
+    /* Check for empty value */
+    if (*val_start == '\0' || *val_start == '\n' || *val_start == '\r' ||
+        *val_start == ';') {
+      return -1;
+    }
+
+    /* Parse the delay value */
+    delay = atoi(val_start);
+    if (delay >= 0) {
+      return delay;
+    }
+    return -1;
   }
 
   return -1;

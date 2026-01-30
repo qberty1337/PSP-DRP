@@ -56,7 +56,7 @@ skip_button = L
 ; - For games that crash on early load: use higher values (1000-10000)
 ; If network init fails repeatedly, the plugin will add a game-specific entry
 ; like "UCUS98712_startup_delay_ms =" for you to fill in.
-startup_delay_ms = 6000
+startup_delay_ms = 5000
 
 ; Per-game startup delay examples (add values after = to enable):
 ; NPUH10117_startup_delay_ms = 10000  ; Corpse Party - needs delay to avoid crash
