@@ -27,7 +27,7 @@ pub enum ServerEvent {
         battery: u8,
     },
     /// PSP disconnected (timeout)
-    PspDisconnected { addr: SocketAddr },
+    PspDisconnected { addr: SocketAddr, name: String },
     /// Game info updated
     GameInfoUpdated { addr: SocketAddr, info: GameInfo },
     /// Heartbeat received
@@ -176,8 +176,11 @@ impl Server {
                 for addr in to_remove {
                     if let Some(conn) = conns.remove(&addr) {
                         info!("PSP {} ({}) disconnected (timeout)", conn.name, addr);
+                        let _ = event_tx_clone.send(ServerEvent::PspDisconnected { 
+                            addr, 
+                            name: conn.name 
+                        }).await;
                     }
-                    let _ = event_tx_clone.send(ServerEvent::PspDisconnected { addr }).await;
                 }
             }
         });
@@ -266,6 +269,11 @@ impl Server {
                     if let Some(conn) = conns.get_mut(&addr) {
                         conn.last_seen = Instant::now();
                         conn.current_game = Some(info.clone());
+                        // Update connection name from GameInfo if we have a better name
+                        if !info.psp_name.is_empty() && conn.name != info.psp_name {
+                            debug!("Updating connection name from '{}' to '{}'", conn.name, info.psp_name);
+                            conn.name = info.psp_name.clone();
+                        }
                         // If PSP sent persistent flag (send_once mode), mark connection
                         if info.persistent {
                             conn.persistent = true;

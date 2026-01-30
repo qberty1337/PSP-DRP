@@ -249,7 +249,11 @@ fn render_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     let left_content = Line::from(vec![
         Span::styled(" PSP ", Style::default().fg(Color::Black).bg(Color::Magenta).bold()),
-        Span::styled(" Discord Rich Presence ", Style::default().fg(Color::Magenta).bold()),
+        Span::styled(" DRP ", Style::default().fg(Color::Magenta).bold()),
+        Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray)
+        ),
         Span::raw("  "),
         discord_indicator,
         Span::styled("  |  ", Style::default().fg(Color::DarkGray)),

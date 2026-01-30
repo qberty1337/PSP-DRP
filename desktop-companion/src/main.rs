@@ -311,21 +311,29 @@ async fn handle_server_event(
             }
         }
 
-        ServerEvent::PspDisconnected { addr } => {
+        ServerEvent::PspDisconnected { addr, name } => {
             let mut state = tui_state.write().await;
-            let name = state.psp_name.clone().unwrap_or_else(|| "PSP".to_string());
-            state.psp_name = None;
-            state.psp_addr = None;
-            state.current_game = None;
-            state.ascii_art = None;
-            state.session_start = None;
-            state.status_message = "Waiting for PSP connection...".to_string();
-            state.log_info(&format!("PSP '{}' disconnected", name));
             
-            usage_tracker.unregister_psp(addr);
+            // Only process if this is our current PSP
+            let is_current_psp = state.psp_addr.map(|a| a == addr).unwrap_or(false);
             
-            if let Err(e) = discord.clear_presence().await {
-                state.log_warn(&format!("Discord error: {}", e));
+            if is_current_psp {
+                state.psp_name = None;
+                state.psp_addr = None;
+                state.current_game = None;
+                state.ascii_art = None;
+                state.session_start = None;
+                state.status_message = "Waiting for PSP connection...".to_string();
+                state.log_info(&format!("PSP '{}' disconnected", name));
+                
+                usage_tracker.unregister_psp(addr);
+                
+                if let Err(e) = discord.clear_presence().await {
+                    state.log_warn(&format!("Discord error: {}", e));
+                }
+            } else {
+                // Log but don't clear state for unknown connections
+                state.log_info(&format!("Unknown device '{}' disconnected", name));
             }
         }
 

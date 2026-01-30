@@ -25,6 +25,9 @@ struct TrackedGame {
     title: String,
     /// Total accumulated playtime in seconds
     total_seconds: u64,
+    /// First played timestamp
+    #[serde(default)]
+    first_played: String,
     /// Last played timestamp
     last_played: String,
     /// Number of sessions
@@ -47,6 +50,8 @@ struct ActiveSession {
     title: String,
     state: PspState,
     start_time: Instant,
+    /// How many seconds have already been saved to disk for this session
+    saved_seconds: u64,
 }
 
 /// Per-PSP tracker (in-memory state)
@@ -218,6 +223,7 @@ impl UsageTracker {
                     title: s.title.clone(),
                     state: s.state,
                     start_time: s.start_time,
+                    saved_seconds: s.saved_seconds,
                 })
             } else {
                 None
@@ -228,7 +234,13 @@ impl UsageTracker {
 
         // Save current session if game hasn't changed
         if let Some(session) = session_to_save {
-            self.save_session(&psp_name_for_log, &session);
+            let new_saved_seconds = self.save_session(&psp_name_for_log, &session);
+            // Update the tracker's saved_seconds
+            if let Some(tracker) = self.trackers.get_mut(&addr) {
+                if let Some(ref mut current) = tracker.current_session {
+                    current.saved_seconds = new_saved_seconds;
+                }
+            }
         }
 
         // Handle game change
@@ -256,6 +268,7 @@ impl UsageTracker {
                 title: info.title.clone(),
                 state: info.state,
                 start_time: Instant::now(),
+                saved_seconds: 0,
             });
 
             debug!(
@@ -265,13 +278,17 @@ impl UsageTracker {
         }
     }
 
-    /// Save a session's playtime to the usage data file
-    fn save_session(&self, psp_name: &str, session: &ActiveSession) {
-        let duration = session.start_time.elapsed();
-
-        // Skip very short sessions
-        if duration.as_secs() < self.min_session_seconds {
-            return;
+    /// Save a session's playtime delta to the usage data file
+    /// Returns the new total saved_seconds for this session
+    fn save_session(&self, psp_name: &str, session: &ActiveSession) -> u64 {
+        let total_elapsed = session.start_time.elapsed().as_secs();
+        
+        // Calculate delta (time since last save)
+        let delta = total_elapsed.saturating_sub(session.saved_seconds);
+        
+        // Skip if no new time to save
+        if delta < self.min_session_seconds {
+            return session.saved_seconds;
         }
 
         let mut data = self.load_data();
@@ -286,37 +303,45 @@ impl UsageTracker {
 
         // Get or create game entry
         let game_key = format!("{}:{}", session.game_id, session.state as u8);
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let game_data = psp_data.games.entry(game_key.clone()).or_insert_with(|| {
             TrackedGame {
                 game_id: session.game_id.clone(),
                 title: session.title.clone(),
                 total_seconds: 0,
+                first_played: now.clone(),
                 last_played: String::new(),
                 session_count: 0,
             }
         });
 
-        // Update with current session duration
-        game_data.total_seconds = duration.as_secs();
-        game_data.last_played = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // Add delta to total (not replace)
+        game_data.total_seconds += delta;
+        game_data.last_played = now;
         let total_for_log = game_data.total_seconds;
-        // Only increment session count on new sessions (handled in update_game)
 
         self.save_data(&data);
 
         debug!(
-            "Usage tracker: saved {} total for '{}' on {}",
+            "Usage tracker: saved +{} (total {}) for '{}' on {}",
+            format_duration(Duration::from_secs(delta)),
             format_duration(Duration::from_secs(total_for_log)),
             session.title,
             psp_name
         );
+        
+        total_elapsed
     }
 
     /// Finish a session and increment the session count
     fn finish_session(&self, psp_name: &str, session: &ActiveSession) {
-        let duration = session.start_time.elapsed();
+        let total_elapsed = session.start_time.elapsed().as_secs();
+        
+        // Calculate remaining unsaved time
+        let delta = total_elapsed.saturating_sub(session.saved_seconds);
 
-        if duration.as_secs() < self.min_session_seconds {
+        // Skip if session is too short overall
+        if total_elapsed < self.min_session_seconds {
             return;
         }
 
@@ -330,28 +355,31 @@ impl UsageTracker {
         });
 
         let game_key = format!("{}:{}", session.game_id, session.state as u8);
+        let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
         let game_data = psp_data.games.entry(game_key).or_insert_with(|| {
             TrackedGame {
                 game_id: session.game_id.clone(),
                 title: session.title.clone(),
                 total_seconds: 0,
+                first_played: now.clone(),
                 last_played: String::new(),
                 session_count: 0,
             }
         });
 
-        // Add session duration to total (not replace)
-        game_data.total_seconds += duration.as_secs();
-        game_data.last_played = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        // Add only the remaining delta (unsaved time) to total
+        game_data.total_seconds += delta;
+        game_data.last_played = now;
         game_data.session_count += 1;
         let total_for_log = game_data.total_seconds;
 
         self.save_data(&data);
 
         info!(
-            "Usage tracker: finished session for '{}' ({}) - Total: {}",
+            "Usage tracker: finished session for '{}' (+{}, session: {}) - Total: {}",
             session.title,
-            format_duration(duration),
+            format_duration(Duration::from_secs(delta)),
+            format_duration(Duration::from_secs(total_elapsed)),
             format_duration(Duration::from_secs(total_for_log))
         );
     }
@@ -383,8 +411,8 @@ impl UsageTracker {
         
         for psp_data in data.psps.values() {
             for game in psp_data.games.values() {
-                // Skip entries with no title or XMB browsing
-                if game.title.is_empty() || game.game_id == "XMB" {
+                // Skip entries with no title
+                if game.title.is_empty() {
                     continue;
                 }
                 

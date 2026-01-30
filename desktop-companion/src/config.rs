@@ -100,7 +100,7 @@ fn default_discovery_interval() -> u64 {
     30
 }
 fn default_timeout() -> u64 {
-    90
+    120
 }
 fn default_log_level() -> String {
     "info".to_string()
