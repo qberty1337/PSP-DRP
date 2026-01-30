@@ -1,51 +1,52 @@
 ; PSP DRP Configuration
 ; Edit this file to customize the plugin's behavior
+; Rename to psp_drp.ini and place in ms0:/SEPLUGINS/pspdrp/
 
 ; Enable or disable the plugin (1 = enabled, 0 = disabled)
 enabled = 1
 
 ; Desktop companion app IP address
 ; Leave empty to use auto-discovery
-desktop_ip = 192.168.50.66
+desktop_ip = 
 
 ; Port to connect to (default: 9276)
 port = 9276
 
 ; Enable auto-discovery of desktop app (1 = enabled, 0 = disabled)
-auto_discovery = 0
+auto_discovery = 1
 
 ; When to show presence:
 ; 0 = only when playing games
 ; 1 = always (including XMB)
-always_active = 1
+always_active = 0
 
 ; Send game icons to desktop app (1 = enabled, 0 = disabled)
-send_icons = 0
+send_icons = 1
 
 ; Custom name for this PSP (shown in Discord)
-psp_name = PSP ARK-4
+psp_name = PSP
 
 ; Game polling interval in milliseconds (default: 5000)
 poll_interval_ms = 5000
 
 ; Heartbeat interval in milliseconds (default: 30000)
-heartbeat_interval_ms = 10000
+heartbeat_interval_ms = 30000
 
 ; Game info resend interval in milliseconds (default: 60000)
 ; Set to 0 to only send on change
-game_update_interval_ms = 30000
+game_update_interval_ms = 60000
 
 ; Timeout in seconds to wait until deactivating the plugin by default (0 = disable)
 connect_timeout_s = 30
 
 ; Send once mode (1 = enabled, 0 = disabled)
 ; When enabled, sends one update on plugin load then safely unloads network
-send_once = 1
+send_once = 0
 
 ; Enable debug logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)
 ; Keep disabled for normal use to avoid memory stick writes
 enable_logging = 0
 
-; Holding this button down while the plugin loads will prevent the plugin from loading (default is L is not specified)
+; Holding this button down while the plugin loads will prevent the plugin from loading
 ; Supported keys = L, R, SELECT, START, UP, DOWN, LEFT, RIGHT, TRIANGLE, CIRCLE, CROSS, SQUARE
 skip_button = L
