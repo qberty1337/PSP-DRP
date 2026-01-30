@@ -293,6 +293,85 @@ static void load_logging_enabled(void) {
   g_logging_enabled = 0;
 }
 
+static int parse_int(const char *val) {
+  int result = 0;
+  int negative = 0;
+  if (val == NULL) {
+    return 0;
+  }
+  while (*val == ' ' || *val == '\t') {
+    val++;
+  }
+  if (*val == '-') {
+    negative = 1;
+    val++;
+  }
+  while (*val >= '0' && *val <= '9') {
+    result = result * 10 + (*val - '0');
+    val++;
+  }
+  return negative ? -result : result;
+}
+
+static int load_startup_delay(void) {
+  char buf[2048];
+  int len;
+  char *line;
+  char *next;
+  SceUID fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return AUTO_START_DELAY_MS;
+  }
+  len = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (len <= 0) {
+    return AUTO_START_DELAY_MS;
+  }
+  buf[len] = '\0';
+  line = buf;
+  while (*line != '\0') {
+    char *p = line;
+    char *eq = NULL;
+    next = strchr(line, '\n');
+    if (next != NULL) {
+      *next = '\0';
+      next++;
+    }
+
+    while (*p == ' ' || *p == '\t' || *p == '\r') {
+      p++;
+    }
+    if (*p == '#' || *p == ';' || *p == '\0') {
+      line = (next != NULL) ? next : (line + strlen(line));
+      continue;
+    }
+
+    eq = strchr(p, '=');
+    if (eq != NULL) {
+      char *key_end = eq - 1;
+      char *val = eq + 1;
+      while (key_end > p && (*key_end == ' ' || *key_end == '\t')) {
+        *key_end-- = '\0';
+      }
+      *eq = '\0';
+      while (*val == ' ' || *val == '\t') {
+        val++;
+      }
+      if (token_equals(p, "STARTUP_DELAY_MS")) {
+        int delay = parse_int(val);
+        if (delay >= 0) {
+          return delay;
+        }
+        return AUTO_START_DELAY_MS;
+      }
+    }
+
+    line = (next != NULL) ? next : (line + strlen(line));
+  }
+
+  return AUTO_START_DELAY_MS;
+}
+
 static int load_net_plugin(void) {
   char msg[12];
   char hex[9];
@@ -360,12 +439,13 @@ static int auto_start_thread(SceSize args, void *argp) {
   SceCtrlData pad;
   int attempts = 0;
   int max_attempts = AUTO_START_MAX_ATTEMPTS;
+  int startup_delay = load_startup_delay();
 
   sceCtrlSetSamplingCycle(0);
   sceCtrlSetSamplingMode(PSP_CTRL_MODE_DIGITAL);
 
   loader_log_raw("Auto-start thread delay");
-  sceKernelDelayThread(AUTO_START_DELAY_MS * 1000);
+  sceKernelDelayThread(startup_delay * 1000);
 
   if (sceCtrlPeekBufferPositive(&pad, 1) > 0) {
     unsigned int skip_button = load_skip_button();

@@ -5,8 +5,4 @@
 #define LOG_PREFIX "[LOADER_GAME] "
 #define START_FLAGS 0
 
-// Wait 3 seconds before activating the plugin to give games
-// with network loading enough time to fully initialize
-#define AUTO_START_DELAY_MS 3000
-
 #include "../../loader/src/main.c"

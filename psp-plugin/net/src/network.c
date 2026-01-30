@@ -415,27 +415,50 @@ int network_show_profile_selector(void) {
 
 /**
  * Connect to WiFi access point
+ *
+ * This function handles network connection with care to not interfere with
+ * game connections. If the network is already connected or in the process
+ * of connecting (by the game), we reuse that connection instead of
+ * disconnecting and reconnecting.
  */
 static int connect_to_ap(void) {
   int ret;
-  int state;
+  int state = 0;
 
   net_log("connect_to_ap begin");
 
-  /* Check if already connected */
+  /* Check current network state */
   ret = sceNetApctlGetState(&state);
   net_log("connect_to_ap state ret=%d state=%d", ret, state);
-  if (ret == 0 && state == PSP_NET_APCTL_STATE_GOT_IP) {
-    return 0;
+
+  if (ret == 0) {
+    /* Already have an IP - fully connected, reuse this connection */
+    if (state == PSP_NET_APCTL_STATE_GOT_IP) {
+      net_log("connect_to_ap: already connected, reusing");
+      return 0;
+    }
+
+    /* Network state > 0 means the game is connecting or connected
+     * States: 0=disconnected, 1=scanning, 2=joining, 3=getting IP, 4=got IP
+     * For states 1-3, let the game's connection attempt complete */
+    if (state > 0) {
+      net_log("connect_to_ap: game connecting (state=%d), waiting for it",
+              state);
+      return 0; /* Let wait_for_connection handle it */
+    }
   }
 
+  /* Only disconnect and reconnect if truly disconnected or in error state */
+  net_log("connect_to_ap: disconnected, initiating connection");
+
+  /* Ensure clean state before connecting */
   {
     int disc = sceNetApctlDisconnect();
     net_log("connect_to_ap pre-disconnect ret=0x%08X", (unsigned int)disc);
     sceKernelDelayThread(300 * 1000);
   }
 
-  /* Try to connect to first available connection */
+  /* Try to connect to configured profile */
   ret = sceNetApctlConnect(g_profile_id);
   net_log("connect_to_ap connect ret=0x%08X profile=%d", (unsigned int)ret,
           g_profile_id);
