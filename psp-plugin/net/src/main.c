@@ -129,17 +129,7 @@ static int plugin_thread(SceSize args, void *argp) {
   int game_specific_delay = -1;
   int network_init_failed = 0;
 
-  /* Try to grab network IMMEDIATELY before the game can */
-  net_log("Net thread started - immediate init attempt");
-  {
-    int early_init = network_init();
-    if (early_init == 0) {
-      g_network_initialized = 1;
-      net_log("Early network init SUCCESS");
-    } else {
-      net_log("Early network init failed: 0x%08X", (unsigned int)early_init);
-    }
-  }
+  net_log("Net thread started");
 
   if (config_load(&g_config) < 0) {
     config_set_defaults(&g_config);
@@ -170,15 +160,26 @@ static int plugin_thread(SceSize args, void *argp) {
       strncpy(early_game_id, new_game.game_id, sizeof(early_game_id) - 1);
       net_log("Early game detect: %s", early_game_id);
 
-      /* Check for game-specific startup delay */
+      /* Check for game-specific startup delay - apply BEFORE network init */
       game_specific_delay = config_get_game_startup_delay(early_game_id);
       net_log("Game delay lookup for %s: %d", early_game_id,
               game_specific_delay);
       if (game_specific_delay >= 0) {
         net_log("Applying game-specific delay: %d ms", game_specific_delay);
-        /* Apply the game-specific delay */
         sceKernelDelayThread(game_specific_delay * 1000);
       }
+    }
+  }
+
+  /* Now try to initialize network (after any game-specific delay) */
+  if (!g_network_initialized && !g_started_from_ui) {
+    net_log("Attempting network init");
+    int early_init = network_init();
+    if (early_init == 0) {
+      g_network_initialized = 1;
+      net_log("Network init SUCCESS");
+    } else {
+      net_log("Network init failed: 0x%08X", (unsigned int)early_init);
     }
   }
 
