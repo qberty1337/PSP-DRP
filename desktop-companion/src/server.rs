@@ -31,7 +31,11 @@ pub enum ServerEvent {
     /// Game info updated
     GameInfoUpdated { addr: SocketAddr, info: GameInfo },
     /// Heartbeat received
-    HeartbeatReceived { addr: SocketAddr, heartbeat: Heartbeat },
+    HeartbeatReceived {
+        #[allow(dead_code)]
+        addr: SocketAddr,
+        heartbeat: Heartbeat,
+    },
     /// Icon received completely
     IconReceived {
         game_id: String,
@@ -103,6 +107,7 @@ impl Server {
         }
     }
 
+    #[allow(dead_code)]
     fn guess_broadcast(ip: Ipv4Addr) -> Ipv4Addr {
         let mut octets = ip.octets();
         octets[3] = 255;
@@ -475,6 +480,7 @@ impl Server {
     }
 
     /// Send discovery broadcast
+    #[allow(dead_code)]
     pub async fn send_discovery_broadcast(&self) -> Result<()> {
         if let Some(socket) = &self.socket {
             let request = DiscoveryRequest::new(self.config.network.listen_port);

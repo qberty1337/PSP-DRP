@@ -126,12 +126,13 @@ async fn main() -> Result<()> {
         .unwrap_or_else(UsageTracker::default_log_path);
     let mut usage_tracker = UsageTracker::new(usage_log_path, config.usage.enabled);
 
-    // Load most played game for display
+    // Load top 3 most played games for display
     {
         let mut state = tui_state.write().await;
-        if let Some((title, total_secs)) = usage_tracker.get_most_played() {
-            state.most_played = Some((title, format_playtime(total_secs)));
-        }
+        let top_games = usage_tracker.get_top_played(3);
+        state.top_played = top_games.into_iter()
+            .map(|(title, secs)| (title, format_playtime(secs)))
+            .collect();
     }
 
     // Initialize icon manager with configured mode
@@ -381,11 +382,12 @@ async fn handle_server_event(
             // Update usage tracker
             usage_tracker.update_game(addr, &info);
             
-            // Update most played game if it changed
+            // Update top played games if game changed
             if game_changed {
-                if let Some((title, total_secs)) = usage_tracker.get_most_played() {
-                    state.most_played = Some((title, format_playtime(total_secs)));
-                }
+                let top_games = usage_tracker.get_top_played(3);
+                state.top_played = top_games.into_iter()
+                    .map(|(title, secs)| (title, format_playtime(secs)))
+                    .collect();
             }
             
             // Update Discord presence

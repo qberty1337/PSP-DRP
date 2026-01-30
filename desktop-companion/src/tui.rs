@@ -17,7 +17,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Padding, Paragraph},
     Frame, Terminal,
 };
 
@@ -56,8 +56,8 @@ pub struct TuiState {
     pub session_start: Option<Instant>,
     /// Application status message
     pub status_message: String,
-    /// Most played game (title, formatted playtime)
-    pub most_played: Option<(String, String)>,
+    /// Top 3 most played games (title, formatted playtime)
+    pub top_played: Vec<(String, String)>,
 }
 
 /// A log entry with timestamp and content
@@ -225,11 +225,12 @@ fn render_ui(frame: &mut Frame, state: &TuiState) {
 /// Render the header bar
 fn render_header(frame: &mut Frame, area: Rect, state: &TuiState) {
     // Split header into left and right sections
+    // Give the right side (most played) as much space as possible
     let header_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Min(50),        // Left: title and status
-            Constraint::Percentage(40), // Right: most played
+            Constraint::Length(42),     // Left: title and status (fixed width)
+            Constraint::Min(0),         // Right: most played (gets all remaining space)
         ])
         .split(area);
 
@@ -266,23 +267,38 @@ fn render_header(frame: &mut Frame, area: Rect, state: &TuiState) {
 
     frame.render_widget(left_header, header_chunks[0]);
 
-    // Right side: Most played game
-    let right_content = if let Some((title, playtime)) = &state.most_played {
-        let display_title = if title.len() > 20 {
-            format!("{}...", &title[..17])
-        } else {
-            title.clone()
+
+    // Right side: Top most played games (compact display)
+    let right_content = if !state.top_played.is_empty() {
+        let count = state.top_played.len();
+        
+        // Use short label to maximize space for game names
+        let label = match count {
+            1 => "★ ".to_string(),
+            n => format!("★ Top {}: ", n),
         };
-        Line::from(vec![
-            Span::styled("★ Most Played: ", Style::default().fg(Color::Yellow)),
-            Span::styled(display_title, Style::default().fg(Color::White).bold()),
-            Span::styled(" (", Style::default().fg(Color::DarkGray)),
-            Span::styled(playtime, Style::default().fg(Color::Cyan)),
-            Span::styled(") ", Style::default().fg(Color::DarkGray)),
-        ])
+        
+        let mut spans = vec![
+            Span::styled(label, Style::default().fg(Color::Yellow)),
+        ];
+        
+        for (i, (title, playtime)) in state.top_played.iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            }
+            
+            // Only show number prefix if more than 1 game
+            if count > 1 {
+                spans.push(Span::styled(format!("{}.", i + 1), Style::default().fg(Color::Cyan)));
+            }
+            spans.push(Span::styled(title.clone(), Style::default().fg(Color::White).bold()));
+            spans.push(Span::styled(format!(" ({})", playtime), Style::default().fg(Color::DarkGray)));
+        }
+        
+        Line::from(spans)
     } else {
         Line::from(vec![
-            Span::styled("★ Most Played: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("★ ", Style::default().fg(Color::DarkGray)),
             Span::styled("No data yet", Style::default().fg(Color::DarkGray).italic()),
         ])
     };
@@ -472,7 +488,7 @@ fn render_game_panel(frame: &mut Frame, area: Rect, state: &TuiState) {
 }
 
 /// Create a placeholder for a game
-fn create_game_placeholder(game_id: &str, title: &str, width: u16, height: u16) -> Text<'static> {
+fn create_game_placeholder(game_id: &str, title: &str, _width: u16, height: u16) -> Text<'static> {
     let title_display = if title.is_empty() {
         "Unknown Game".to_string()
     } else if title.len() > 24 {
@@ -518,7 +534,7 @@ fn create_game_placeholder(game_id: &str, title: &str, width: u16, height: u16) 
 }
 
 /// Create a waiting placeholder
-fn create_waiting_placeholder(width: u16, height: u16) -> Text<'static> {
+fn create_waiting_placeholder(_width: u16, height: u16) -> Text<'static> {
     let content_height = 5;
     let top_padding = if height > content_height { (height - content_height) / 2 } else { 0 };
     
@@ -529,9 +545,6 @@ fn create_waiting_placeholder(width: u16, height: u16) -> Text<'static> {
     }
     
     lines.push(Line::styled("No game running", Style::default().fg(Color::DarkGray).italic()));
-    lines.push(Line::from(""));
-    lines.push(Line::styled("Connect your PSP to", Style::default().fg(Color::DarkGray)));
-    lines.push(Line::styled("display game icon here", Style::default().fg(Color::DarkGray)));
     
     Text::from(lines)
 }

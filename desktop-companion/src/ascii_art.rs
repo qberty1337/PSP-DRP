@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use artem::config::{ConfigBuilder, TargetType};
-use image::{DynamicImage, GenericImageView, Luma};
+use image::GenericImageView;
 use tracing::{debug, error, info, warn};
 
 /// Target width for ASCII art (in characters)

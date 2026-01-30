@@ -373,30 +373,37 @@ impl UsageTracker {
         info!("Usage tracker: flushed all sessions");
     }
 
-    /// Get the most played game across all PSPs
-    /// Returns (title, total_seconds) if any games are tracked
-    pub fn get_most_played(&self) -> Option<(String, u64)> {
+    /// Get the top N most played games across all PSPs
+    /// Returns a vector of (title, total_seconds), sorted by playtime descending
+    pub fn get_top_played(&self, count: usize) -> Vec<(String, u64)> {
         let data = self.load_data();
         
-        let mut most_played: Option<(String, u64)> = None;
+        // Collect all games with their playtimes
+        let mut all_games: Vec<(String, u64)> = Vec::new();
         
         for psp_data in data.psps.values() {
             for game in psp_data.games.values() {
-                // Skip entries with no title
-                if game.title.is_empty() {
+                // Skip entries with no title or XMB browsing
+                if game.title.is_empty() || game.game_id == "XMB" {
                     continue;
                 }
                 
-                match &most_played {
-                    Some((_, secs)) if game.total_seconds <= *secs => {}
-                    _ => {
-                        most_played = Some((game.title.clone(), game.total_seconds));
-                    }
+                // Check if we already have this title (aggregate across PSPs)
+                if let Some(existing) = all_games.iter_mut().find(|(t, _)| t == &game.title) {
+                    existing.1 += game.total_seconds;
+                } else {
+                    all_games.push((game.title.clone(), game.total_seconds));
                 }
             }
         }
         
-        most_played
+        // Sort by playtime descending
+        all_games.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        // Take top N
+        all_games.truncate(count);
+        
+        all_games
     }
 }
 

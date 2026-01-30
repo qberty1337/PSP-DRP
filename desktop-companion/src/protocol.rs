@@ -86,6 +86,7 @@ impl PspState {
 /// Heartbeat message from PSP
 #[derive(Debug, Clone)]
 pub struct Heartbeat {
+    #[allow(dead_code)]
     pub uptime_seconds: u32,
     pub wifi_strength: u8,
 }
@@ -111,6 +112,7 @@ impl Heartbeat {
 pub struct GameInfo {
     pub game_id: String,
     pub title: String,
+    #[allow(dead_code)]
     pub start_time: u32,
     pub state: PspState,
     pub has_icon: bool,
