@@ -1,0 +1,254 @@
+name: Build and Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+jobs:
+  # Only run if PR was merged (not just closed)
+  check-merge:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Check if should release
+        id: check
+        run: echo "should_release=true" >> $GITHUB_OUTPUT
+      
+      - name: Extract version from Cargo.toml
+        id: version
+        run: |
+          # Extract version from desktop-companion/Cargo.toml
+          VERSION=$(grep -m1 '^version' desktop-companion/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=v$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: v$VERSION"
+
+  # Build Desktop Companion for multiple platforms
+  build-desktop:
+    needs: check-merge
+    if: needs.check-merge.outputs.should_release == 'true'
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: psp-drp.exe
+            archive_name: psp-drp-desktop-windows
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: psp-drp
+            archive_name: psp-drp-desktop-linux
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: psp-drp
+            archive_name: psp-drp-desktop-macos
+    
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Build Release
+        working-directory: desktop-companion
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Create Release Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path release
+          Copy-Item "desktop-companion/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination "release/"
+          Copy-Item "desktop-companion/config.toml.example" -Destination "release/config.toml"
+          Compress-Archive -Path "release/*" -DestinationPath "${{ matrix.archive_name }}.zip"
+      
+      - name: Create Release Package (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          mkdir -p release
+          cp "desktop-companion/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" release/
+          cp "desktop-companion/config.toml.example" release/config.toml
+          cd release && zip -r "../${{ matrix.archive_name }}.zip" .
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive_name }}
+          path: ${{ matrix.archive_name }}.zip
+          retention-days: 1
+
+  # Build PSP Plugin using Docker
+  build-psp-plugin:
+    needs: check-merge
+    if: needs.check-merge.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Build PSP Plugin
+        run: |
+          docker compose run --rm pspdev make clean-all
+          docker compose run --rm pspdev make
+      
+      - name: Create Default Config
+        run: |
+          # Create a clean default config for distribution
+          cat > psp-plugin/psp_drp_default.ini << 'EOF'
+          ; PSP DRP Configuration
+          ; Edit this file to customize the plugin's behavior
+          ; Save as psp_drp.ini in ms0:/SEPLUGINS/pspdrp/
+
+          ; Enable or disable the plugin (1 = enabled, 0 = disabled)
+          enabled = 1
+
+          ; Desktop companion app IP address
+          ; Leave empty to use auto-discovery
+          desktop_ip = 
+
+          ; Port to connect to (default: 9276)
+          port = 9276
+
+          ; Enable auto-discovery of desktop app (1 = enabled, 0 = disabled)
+          auto_discovery = 1
+
+          ; When to show presence:
+          ; 0 = only when playing games
+          ; 1 = always (including XMB)
+          always_active = 0
+
+          ; Send game icons to desktop app (1 = enabled, 0 = disabled)
+          send_icons = 1
+
+          ; Custom name for this PSP (shown in Discord)
+          psp_name = PSP
+
+          ; Game polling interval in milliseconds (default: 5000)
+          poll_interval_ms = 5000
+
+          ; Heartbeat interval in milliseconds (default: 30000)
+          heartbeat_interval_ms = 30000
+
+          ; Game info resend interval in milliseconds (default: 60000)
+          ; Set to 0 to only send on change
+          game_update_interval_ms = 60000
+
+          ; Timeout in seconds to wait until deactivating the plugin by default (0 = disable)
+          connect_timeout_s = 30
+
+          ; Send once mode (1 = enabled, 0 = disabled)
+          ; When enabled, sends one update on plugin load then safely unloads network
+          send_once = 0
+
+          ; Enable debug logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)
+          ; Keep disabled for normal use to avoid memory stick writes
+          enable_logging = 0
+
+          ; Holding this button down while the plugin loads will prevent the plugin from loading
+          ; Supported keys = L, R, SELECT, START, UP, DOWN, LEFT, RIGHT, TRIANGLE, CIRCLE, CROSS, SQUARE
+          skip_button = L
+          EOF
+      
+      - name: Create Release Package
+        run: |
+          mkdir -p release/pspdrp
+          cp psp-plugin/psp_drp_loader.prx release/pspdrp/
+          cp psp-plugin/psp_drp_loader_game.prx release/pspdrp/
+          cp psp-plugin/psp_drp_net.prx release/pspdrp/
+          cp psp-plugin/psp_drp_default.ini release/pspdrp/psp_drp.ini
+          
+          # Create README for the PSP plugin package
+          cat > release/README.txt << 'EOF'
+          PSP DRP Plugin Installation
+          ===========================
+
+          1. Copy the entire 'pspdrp' folder to ms0:/SEPLUGINS/
+
+          2. Edit ms0:/SEPLUGINS/plugins.txt (create if it doesn't exist) and add:
+             xmb, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
+             game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader_game.prx, on
+
+          3. Edit psp_drp.ini to configure your desktop IP and preferences
+
+          4. Restart your PSP
+
+          For more information, visit: https://github.com/qberty1337/PSP-DRP
+          EOF
+          
+          cd release && zip -r ../psp-drp-plugin.zip .
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: psp-drp-plugin
+          path: psp-drp-plugin.zip
+          retention-days: 1
+
+  # Create GitHub Release with all artifacts
+  create-release:
+    needs: [check-merge, build-desktop, build-psp-plugin]
+    if: needs.check-merge.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: List artifacts
+        run: find artifacts -type f
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check-merge.outputs.version }}
+          name: PSP DRP ${{ needs.check-merge.outputs.version }}
+          body: |
+            ## PSP Discord Rich Presence Release
+            
+            This release was automatically generated from PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}
+            
+            ### Downloads
+            
+            **Desktop Companion App:**
+            - `psp-drp-desktop-windows.zip` - Windows (x64)
+            - `psp-drp-desktop-linux.zip` - Linux (x64)
+            - `psp-drp-desktop-macos.zip` - macOS (x64)
+            
+            **PSP Plugin:**
+            - `psp-drp-plugin.zip` - Contains all PRX files and default config
+            
+            ### Installation
+            
+            See the [README](https://github.com/${{ github.repository }}/blob/master/README.md) for full installation instructions.
+            
+            ### Changelog
+            
+            ${{ github.event.pull_request.body }}
+          files: |
+            artifacts/psp-drp-desktop-windows/psp-drp-desktop-windows.zip
+            artifacts/psp-drp-desktop-linux/psp-drp-desktop-linux.zip
+            artifacts/psp-drp-desktop-macos/psp-drp-desktop-macos.zip
+            artifacts/psp-drp-plugin/psp-drp-plugin.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
