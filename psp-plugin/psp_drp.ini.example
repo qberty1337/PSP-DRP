@@ -51,7 +51,12 @@ enable_logging = 0
 ; Supported keys = L, R, SELECT, START, UP, DOWN, LEFT, RIGHT, TRIANGLE, CIRCLE, CROSS, SQUARE
 skip_button = L
 
-; Startup delay in milliseconds before activating the plugin (default: 500)
-; - For network games (Wipeout, etc): use low values (500) to grab network before the game
-; - For games that freeze on early plugin load (Corpse Party, etc): use higher values (2000-5000)
-startup_delay_ms = 3000
+; Startup delay in milliseconds before loading net module (default: 0)
+; - For fastest start (beat games to network): use 0
+; - For games that crash on early load: use higher values (1000-10000)
+; If network init fails repeatedly, the plugin will add a game-specific entry
+; like "UCUS98712_startup_delay_ms =" for you to fill in.
+startup_delay_ms = 6000
+
+; Per-game startup delay examples (add values after = to enable):
+; NPUH10117_startup_delay_ms = 10000  ; Corpse Party - needs delay to avoid crash

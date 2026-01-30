@@ -199,6 +199,39 @@ void network_shutdown(void) {
 }
 
 /**
+ * Force cleanup any existing network state
+ * Call this when network_init fails to try to recover
+ */
+void network_force_cleanup(void) {
+  int ret;
+  net_log("force_cleanup: attempting network takeover");
+
+  /* Try to disconnect any existing connection */
+  ret = sceNetApctlDisconnect();
+  net_log("force_cleanup: disconnect ret=0x%08X", (unsigned int)ret);
+  sceKernelDelayThread(100 * 1000);
+
+  /* Try to terminate network subsystems (ignore errors) */
+  ret = sceNetApctlTerm();
+  net_log("force_cleanup: apctl_term ret=0x%08X", (unsigned int)ret);
+  ret = sceNetInetTerm();
+  net_log("force_cleanup: inet_term ret=0x%08X", (unsigned int)ret);
+  ret = sceNetTerm();
+  net_log("force_cleanup: net_term ret=0x%08X", (unsigned int)ret);
+
+  /* Try to unload modules (ignore errors) */
+  ret = sceUtilityUnloadNetModule(PSP_NET_MODULE_INET);
+  net_log("force_cleanup: unload_inet ret=0x%08X", (unsigned int)ret);
+  ret = sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
+  net_log("force_cleanup: unload_common ret=0x%08X", (unsigned int)ret);
+
+  /* Give the system time to clean up */
+  sceKernelDelayThread(500 * 1000);
+
+  net_log("force_cleanup: done");
+}
+
+/**
  * Connect to desktop companion app
  */
 int network_connect(const PluginConfig *config) {

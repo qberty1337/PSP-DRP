@@ -81,4 +81,21 @@ int config_load(PluginConfig *config);
  */
 int config_save(const PluginConfig *config);
 
+/**
+ * Get game-specific startup delay from config
+ *
+ * @param game_id Game ID (e.g., "UCUS98712")
+ * @return Delay in ms if found and has value, -1 if not found or empty
+ */
+int config_get_game_startup_delay(const char *game_id);
+
+/**
+ * Write a placeholder for game-specific startup delay
+ * Appends "GAMEID_startup_delay_ms =" to config for user to fill in
+ *
+ * @param game_id Game ID (e.g., "UCUS98712")
+ * @return 0 on success, negative on error
+ */
+int config_write_game_delay_placeholder(const char *game_id);
+
 #endif /* CONFIG_H */

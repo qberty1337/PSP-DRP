@@ -306,3 +306,169 @@ static int parse_bool(const char *value) {
   }
   return 0;
 }
+
+/**
+ * Get game-specific startup delay from config
+ * Looks for GAMEID_startup_delay_ms = VALUE
+ * Returns -1 if not found or empty value
+ */
+int config_get_game_startup_delay(const char *game_id) {
+  SceUID fd;
+  char buffer[2048];
+  char target_key[32];
+  char line[128];
+  int bytes_read;
+  int i, j;
+
+  if (game_id == NULL || game_id[0] == '\0') {
+    return -1;
+  }
+
+  /* Build the key we're looking for: GAMEID_startup_delay_ms */
+  snprintf(target_key, sizeof(target_key), "%s_startup_delay_ms", game_id);
+
+  fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  bytes_read = sceIoRead(fd, buffer, sizeof(buffer) - 1);
+  sceIoClose(fd);
+
+  if (bytes_read <= 0) {
+    return -1;
+  }
+
+  buffer[bytes_read] = '\0';
+
+  /* Parse line by line looking for our key */
+  j = 0;
+  for (i = 0; i <= bytes_read; i++) {
+    if (buffer[i] == '\n' || buffer[i] == '\r' || buffer[i] == '\0') {
+      line[j] = '\0';
+      if (j > 0) {
+        /* Check if this line has our key */
+        const char *eq = strchr(line, '=');
+        if (eq != NULL) {
+          char key[32];
+          char value[16];
+          int key_len = eq - line;
+          int value_len;
+
+          if (key_len >= (int)sizeof(key)) {
+            key_len = sizeof(key) - 1;
+          }
+          strncpy(key, line, key_len);
+          key[key_len] = '\0';
+          trim_whitespace(key);
+
+          /* Check if this is our target key */
+          if (strcmp(key, target_key) == 0) {
+            value_len = strlen(eq + 1);
+            if (value_len >= (int)sizeof(value)) {
+              value_len = sizeof(value) - 1;
+            }
+            strncpy(value, eq + 1, value_len);
+            value[value_len] = '\0';
+            trim_whitespace(value);
+
+            /* If empty value, return -1 (user needs to fill it in) */
+            if (value[0] == '\0') {
+              return -1;
+            }
+
+            /* Parse and return the delay */
+            int delay = atoi(value);
+            if (delay > 0) {
+              return delay;
+            }
+            return -1;
+          }
+        }
+      }
+      j = 0;
+
+      /* Skip \r\n sequences */
+      if (buffer[i] == '\r' && buffer[i + 1] == '\n') {
+        i++;
+      }
+    } else if (j < (int)sizeof(line) - 1) {
+      line[j++] = buffer[i];
+    }
+  }
+
+  return -1;
+}
+
+/**
+ * Check if a game delay key already exists in config
+ */
+static int config_has_game_delay_key(const char *game_id) {
+  SceUID fd;
+  char buffer[2048];
+  char target_key[32];
+  int bytes_read;
+  char *found;
+
+  if (game_id == NULL || game_id[0] == '\0') {
+    return 0;
+  }
+
+  snprintf(target_key, sizeof(target_key), "%s_startup_delay_ms", game_id);
+
+  fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return 0;
+  }
+
+  bytes_read = sceIoRead(fd, buffer, sizeof(buffer) - 1);
+  sceIoClose(fd);
+
+  if (bytes_read <= 0) {
+    return 0;
+  }
+
+  buffer[bytes_read] = '\0';
+  found = strstr(buffer, target_key);
+  return (found != NULL) ? 1 : 0;
+}
+
+/**
+ * Write a placeholder for game-specific startup delay
+ * Appends "GAMEID_startup_delay_ms =" to config for user to fill in
+ */
+int config_write_game_delay_placeholder(const char *game_id) {
+  SceUID fd;
+  char line[128];
+  int len;
+
+  if (game_id == NULL || game_id[0] == '\0') {
+    return -1;
+  }
+
+  /* Don't write if it already exists */
+  if (config_has_game_delay_key(game_id)) {
+    return 0;
+  }
+
+  fd = sceIoOpen(CONFIG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+  if (fd < 0) {
+    return fd;
+  }
+
+  /* Write the placeholder with a comment */
+  len = snprintf(line, sizeof(line),
+                 "\n; Game-specific startup delay (network init failed)\n"
+                 "%s_startup_delay_ms = \n",
+                 game_id);
+
+  /* Ensure we don't write more than the buffer */
+  if (len > (int)sizeof(line) - 1) {
+    len = (int)sizeof(line) - 1;
+  }
+
+  sceIoWrite(fd, line, len);
+  sceIoClose(fd);
+
+  return 0;
+}

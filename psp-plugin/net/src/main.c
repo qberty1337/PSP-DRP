@@ -125,9 +125,21 @@ static int plugin_thread(SceSize args, void *argp) {
 
   GameInfo new_game;
   SceUInt64 now;
+  char early_game_id[10] = {0};
+  int game_specific_delay = -1;
+  int network_init_failed = 0;
 
-  sceKernelDelayThread(2 * 1000 * 1000);
-  net_log("Net thread started");
+  /* Try to grab network IMMEDIATELY before the game can */
+  net_log("Net thread started - immediate init attempt");
+  {
+    int early_init = network_init();
+    if (early_init == 0) {
+      g_network_initialized = 1;
+      net_log("Early network init SUCCESS");
+    } else {
+      net_log("Early network init failed: 0x%08X", (unsigned int)early_init);
+    }
+  }
 
   if (config_load(&g_config) < 0) {
     config_set_defaults(&g_config);
@@ -151,6 +163,24 @@ static int plugin_thread(SceSize args, void *argp) {
   }
 
   game_detect_init();
+
+  /* Early game detection to check for game-specific startup delay */
+  if (!g_started_from_ui) {
+    if (game_detect_current(&new_game) == 0 && new_game.game_id[0] != '\0') {
+      strncpy(early_game_id, new_game.game_id, sizeof(early_game_id) - 1);
+      net_log("Early game detect: %s", early_game_id);
+
+      /* Check for game-specific startup delay */
+      game_specific_delay = config_get_game_startup_delay(early_game_id);
+      if (game_specific_delay > 0) {
+        net_log("Game-specific delay: %d ms", game_specific_delay);
+        /* Apply additional delay (the loader already waited startup_delay_ms,
+         * so this is the game-specific override that the user set) */
+        sceKernelDelayThread(game_specific_delay * 1000);
+      }
+    }
+  }
+
   if (g_started_from_ui) {
     memset(&g_current_game, 0, sizeof(g_current_game));
     strcpy(g_current_game.game_id, "XMB");
@@ -170,6 +200,7 @@ static int plugin_thread(SceSize args, void *argp) {
       int net_res = network_init();
       if (net_res == 0) {
         g_network_initialized = 1;
+        network_init_failed = 0; /* Reset failure flag on success */
 
         g_last_connect_attempt = now;
         g_connect_attempts++;
@@ -194,6 +225,21 @@ static int plugin_thread(SceSize args, void *argp) {
         }
       } else {
         net_log("network_init failed: 0x%08X", (unsigned int)net_res);
+
+        /* On first failure, try force cleanup to take over from game */
+        if (g_init_attempts == 1) {
+          net_log("First failure, attempting force cleanup");
+          network_force_cleanup();
+        }
+
+        /* After 10 failed attempts, write a placeholder for this game */
+        if (g_init_attempts >= 10 && !network_init_failed &&
+            early_game_id[0] != '\0') {
+          network_init_failed = 1;
+          net_log("Writing game delay placeholder for: %s", early_game_id);
+          config_write_game_delay_placeholder(early_game_id);
+        }
+
         sceKernelDelayThread(2000 * 1000);
       }
     }
