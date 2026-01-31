@@ -3,6 +3,8 @@
 **/*.rs.bk
 Cargo.lock
 
+/research/*
+
 # PSP build artifacts
 /psp-plugin/*.o
 /psp-plugin/*.elf

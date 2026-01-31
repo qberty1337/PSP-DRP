@@ -408,8 +408,8 @@ int config_get_game_startup_delay(const char *game_id) {
  */
 static int config_has_game_delay_key(const char *game_id) {
   SceUID fd;
-  char buffer[2048];
-  char target_key[32];
+  char buffer[4096]; /* Match buffer size in config_get_game_startup_delay */
+  char target_key[48];
   int bytes_read;
   char *found;
 
