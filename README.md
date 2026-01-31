@@ -109,7 +109,11 @@ This creates `psp_drp.prx` in the `psp-plugin` folder.
 2. Ensure your PSP is connected to WiFi
 3. Launch a game - your Discord status should update!
 
-### Skip Modifier
+### Skip Button
+
+Hold the **L trigger** (configurable via `SKIP_BUTTON` in the INI) during game boot to prevent the plugin from loading for that session.
+
+If you accidentally skipped or change your mind, press **SELECT + L trigger** (or SELECT + your configured skip button) to reactivate the plugin without restarting the game.
 
 ### Debug Logs
 
@@ -139,6 +143,41 @@ This creates `psp_drp.prx` in the `psp-plugin` folder.
 | `network.listen_port` | Port for PSP connections | `9276` |
 | `network.auto_discovery` | Respond to PSP discovery | `true` |
 | `network.timeout_seconds` | Disconnect timeout | `90` |
+
+## Game Compatibility
+
+Most PSP games work with this plugin, but some have compatibility issues:
+
+| Game | Status | Notes |
+|------|--------|-------|
+| WipEout Pulse | Works | No special handling needed |
+| No Gravity | Works | No special handling needed |
+| Corpse Party (NPUH10117) | Works | Uses vblank wait (~10 sec delay) |
+| The Warriors (ULUS10213) | Partial | Game uses network modules exclusively, cannot share |
+| **PQ: Practical Intelligence Quotient (ULUS10046)** | **Incompatible** | Freezes if ANY thread is started during boot |
+
+### Known Incompatible Games
+
+Some games cannot tolerate plugin threads being created during their boot sequence. For these games, the plugin cannot be automatically skipped because game detection requires a running thread (which is what causes the freeze).
+
+**PQ: Practical Intelligence Quotient (ULUS10046)** - This game freezes on its loading screen if any user-mode thread is created during startup, even a thread that immediately exits. This is a fundamental PSP architecture limitation that cannot be worked around.
+
+#### Workaround for Incompatible Games
+
+For games that freeze with the plugin, you must manually exclude them from plugin loading:
+
+1. Instead of loading the plugin for all games in `GAME.TXT`:
+   ```
+   game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader_game.prx, on
+   ```
+
+2. Load only for specific compatible games:
+   ```
+   NPUH10117, ms0:/SEPLUGINS/pspdrp/psp_drp_loader_game.prx, on  # Corpse Party
+   ULUS10041, ms0:/SEPLUGINS/pspdrp/psp_drp_loader_game.prx, on  # WipEout Pulse
+   ```
+
+3. Or simply disable the plugin when playing incompatible games by toggling it off in the recovery menu.
 
 ## Troubleshooting
 

@@ -36,6 +36,7 @@ void config_set_defaults(PluginConfig *config) {
   config->connect_timeout_s = 30;
   config->send_once = 0;
   config->enable_logging = 0;
+  config->vblank_wait = 300; /* Default: ~5 seconds at 60fps */
 }
 
 /**
@@ -133,6 +134,16 @@ int config_save(const PluginConfig *config) {
       "; Custom name for this PSP (shown in Discord)\n"
       "psp_name = %s\n"
       "\n"
+      "; Vblank wait before network init (default: 300 = ~5 seconds)\n"
+      "; Each vblank is ~16.67ms at 60fps. Increase if game crashes.\n"
+      "; Recommended values: 300 (5s), 600 (10s for sensitive games)\n"
+      "vblank_wait = %lu\n"
+      "\n"
+      "; Enable logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)\n"
+      "enable_logging = %d\n"
+      "\n"
+      "; === Advanced Settings ===\n"
+      "\n"
       "; Game polling interval in milliseconds (default: 5000)\n"
       "poll_interval_ms = %lu\n"
       "\n"
@@ -151,6 +162,7 @@ int config_save(const PluginConfig *config) {
       "send_once = %d\n",
       config->enabled, config->desktop_ip, config->port, config->auto_discovery,
       config->always_active, config->send_icons, config->psp_name,
+      (unsigned long)config->vblank_wait, config->enable_logging,
       (unsigned long)config->poll_interval_ms,
       (unsigned long)config->heartbeat_interval_ms,
       (unsigned long)config->game_update_interval_ms,
@@ -249,6 +261,11 @@ static void parse_line(const char *line, PluginConfig *config) {
     config->send_once = parse_bool(value);
   } else if (strcmp(key, "enable_logging") == 0) {
     config->enable_logging = parse_bool(value);
+  } else if (strcmp(key, "vblank_wait") == 0) {
+    config->vblank_wait = (uint32_t)atoi(value);
+    if (config->vblank_wait > 1800) {
+      config->vblank_wait = 1800; /* Max 30 seconds */
+    }
   }
 }
 
@@ -308,27 +325,27 @@ static int parse_bool(const char *value) {
 }
 
 /**
- * Get game-specific startup delay from config
- * Looks for GAMEID_startup_delay_ms = VALUE
- * Returns -1 if not found or empty value
+ * Get game-specific vblank wait from config.
+ * Looks for GAMEID_vblank_wait = VALUE in the INI file.
+ * Returns the value if found, or -1 if not found.
  */
-int config_get_game_startup_delay(const char *game_id) {
+int config_get_game_vblank_wait(const char *game_id) {
   SceUID fd;
   char buffer[4096];
-  char target_key[48];
+  char target_key[32];
   int bytes_read;
   char *found;
   char *eq;
   char *val_start;
   char *line_start;
-  int delay;
+  int value;
 
   if (game_id == NULL || game_id[0] == '\0') {
     return -1;
   }
 
-  /* Build the key we're looking for: GAMEID_startup_delay_ms */
-  snprintf(target_key, sizeof(target_key), "%s_startup_delay_ms", game_id);
+  /* Build the key we're looking for: GAMEID_vblank_wait */
+  snprintf(target_key, sizeof(target_key), "%s_vblank_wait", game_id);
 
   fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
   if (fd < 0) {
@@ -392,86 +409,13 @@ int config_get_game_startup_delay(const char *game_id) {
       return -1;
     }
 
-    /* Parse the delay value */
-    delay = atoi(val_start);
-    if (delay >= 0) {
-      return delay;
+    /* Parse the vblank count */
+    value = atoi(val_start);
+    if (value >= 0) {
+      return value;
     }
     return -1;
   }
 
   return -1;
-}
-
-/**
- * Check if a game delay key already exists in config
- */
-static int config_has_game_delay_key(const char *game_id) {
-  SceUID fd;
-  char buffer[4096]; /* Match buffer size in config_get_game_startup_delay */
-  char target_key[48];
-  int bytes_read;
-  char *found;
-
-  if (game_id == NULL || game_id[0] == '\0') {
-    return 0;
-  }
-
-  snprintf(target_key, sizeof(target_key), "%s_startup_delay_ms", game_id);
-
-  fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
-  if (fd < 0) {
-    return 0;
-  }
-
-  bytes_read = sceIoRead(fd, buffer, sizeof(buffer) - 1);
-  sceIoClose(fd);
-
-  if (bytes_read <= 0) {
-    return 0;
-  }
-
-  buffer[bytes_read] = '\0';
-  found = strstr(buffer, target_key);
-  return (found != NULL) ? 1 : 0;
-}
-
-/**
- * Write a placeholder for game-specific startup delay
- * Appends "GAMEID_startup_delay_ms =" to config for user to fill in
- */
-int config_write_game_delay_placeholder(const char *game_id) {
-  SceUID fd;
-  char line[128];
-  int len;
-
-  if (game_id == NULL || game_id[0] == '\0') {
-    return -1;
-  }
-
-  /* Don't write if it already exists */
-  if (config_has_game_delay_key(game_id)) {
-    return 0;
-  }
-
-  fd = sceIoOpen(CONFIG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
-  if (fd < 0) {
-    return fd;
-  }
-
-  /* Write the placeholder with a comment */
-  len = snprintf(line, sizeof(line),
-                 "\n; Game-specific startup delay (network init failed)\n"
-                 "%s_startup_delay_ms = \n",
-                 game_id);
-
-  /* Ensure we don't write more than the buffer */
-  if (len > (int)sizeof(line) - 1) {
-    len = (int)sizeof(line) - 1;
-  }
-
-  sceIoWrite(fd, line, len);
-  sceIoClose(fd);
-
-  return 0;
 }
