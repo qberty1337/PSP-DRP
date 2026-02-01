@@ -59,17 +59,12 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
   key_table = (const char *)(buffer + header->key_offset);
   val_table = buffer + header->val_offset;
 
-  net_log("sfo_parse: entries=%u key_off=%u val_off=%u", header->count,
-          header->key_offset, header->val_offset);
-
   /* Parse each entry */
   entry = (const SfoEntry *)(buffer + sizeof(SfoHeader));
 
   for (i = 0; i < header->count; i++) {
     const char *key = key_table + entry[i].key_offset;
     const uint8_t *value = val_table + entry[i].val_offset;
-
-    net_log("sfo_parse: key[%u]='%s' len=%u", i, key, entry[i].val_length);
 
     /* Look for TITLE */
     if (strcmp(key, "TITLE") == 0) {
@@ -79,7 +74,6 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
       }
       memcpy(data->title, value, len);
       data->title[len] = '\0';
-      net_log("sfo_parse: TITLE='%s'", data->title);
     }
     /* Look for DISC_ID */
     else if (strcmp(key, "DISC_ID") == 0) {
@@ -89,7 +83,6 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
       }
       memcpy(data->disc_id, value, len);
       data->disc_id[len] = '\0';
-      net_log("sfo_parse: DISC_ID='%s'", data->disc_id);
     }
     /* Look for TITLE_ID */
     else if (strcmp(key, "TITLE_ID") == 0) {
@@ -99,7 +92,6 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
       }
       memcpy(data->title_id, value, len);
       data->title_id[len] = '\0';
-      net_log("sfo_parse: TITLE_ID='%s'", data->title_id);
     }
     /* Look for CATEGORY */
     else if (strcmp(key, "CATEGORY") == 0) {
@@ -110,8 +102,6 @@ int sfo_parse_buffer(const uint8_t *buffer, uint32_t size, SfoData *data) {
     }
   }
 
-  net_log("sfo_parse: done disc_id='%s' title_id='%s' title='%s'",
-          data->disc_id, data->title_id, data->title);
   return 0;
 }
 
@@ -141,7 +131,6 @@ int sfo_parse_file(const char *path, SfoData *data) {
     if (retry > 0) {
       /* Wait before retry - give filesystem time to settle */
       sceKernelDelayThread(100 * 1000); /* 100ms */
-      net_log("sfo_file: retry %d for %s", retry + 1, path);
     }
 
     /* Get file size */
@@ -151,15 +140,12 @@ int sfo_parse_file(const char *path, SfoData *data) {
 
     /* Sanity check size - must fit in our static buffer */
     if (stat.st_size < sizeof(SfoHeader) || stat.st_size > sizeof(buffer)) {
-      net_log("sfo_file: size %d too large (max %d)", (int)stat.st_size,
-              (int)sizeof(buffer));
       return -1;
     }
 
     /* Open file */
     fd = sceIoOpen(path, PSP_O_RDONLY, 0);
     if (fd < 0) {
-      net_log("sfo_file: open failed fd=0x%08X", fd);
       continue;
     }
 
@@ -168,15 +154,7 @@ int sfo_parse_file(const char *path, SfoData *data) {
     sceIoClose(fd);
 
     if (bytes_read != stat.st_size) {
-      net_log("sfo_file: read returned %d, expected %d", bytes_read,
-              (int)stat.st_size);
       continue;
-    }
-
-    /* Check first bytes for debugging */
-    if (stat.st_size >= 4) {
-      net_log("sfo_file: first bytes: %02X %02X %02X %02X", buffer[0],
-              buffer[1], buffer[2], buffer[3]);
     }
 
     /* Parse the buffer */
@@ -185,8 +163,6 @@ int sfo_parse_file(const char *path, SfoData *data) {
     if (result == 0) {
       return 0; /* Success */
     }
-
-    net_log("sfo_file: parse returned %d", result);
   }
 
   return result;

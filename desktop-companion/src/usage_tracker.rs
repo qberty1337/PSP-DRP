@@ -32,6 +32,9 @@ struct TrackedGame {
     last_played: String,
     /// Number of sessions
     session_count: u32,
+    /// Dates when this game was played (YYYY-MM-DD format)
+    #[serde(default)]
+    play_dates: std::collections::HashSet<String>,
 }
 
 /// Per-PSP usage data
@@ -304,6 +307,7 @@ impl UsageTracker {
         // Get or create game entry
         let game_key = format!("{}:{}", session.game_id, session.state as u8);
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let today = Local::now().format("%Y-%m-%d").to_string();
         let game_data = psp_data.games.entry(game_key.clone()).or_insert_with(|| {
             TrackedGame {
                 game_id: session.game_id.clone(),
@@ -312,12 +316,14 @@ impl UsageTracker {
                 first_played: now.clone(),
                 last_played: String::new(),
                 session_count: 0,
+                play_dates: std::collections::HashSet::new(),
             }
         });
 
         // Add delta to total (not replace)
         game_data.total_seconds += delta;
         game_data.last_played = now;
+        game_data.play_dates.insert(today);
         let total_for_log = game_data.total_seconds;
 
         self.save_data(&data);
@@ -356,6 +362,7 @@ impl UsageTracker {
 
         let game_key = format!("{}:{}", session.game_id, session.state as u8);
         let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let today = Local::now().format("%Y-%m-%d").to_string();
         let game_data = psp_data.games.entry(game_key).or_insert_with(|| {
             TrackedGame {
                 game_id: session.game_id.clone(),
@@ -364,6 +371,7 @@ impl UsageTracker {
                 first_played: now.clone(),
                 last_played: String::new(),
                 session_count: 0,
+                play_dates: std::collections::HashSet::new(),
             }
         });
 
@@ -371,6 +379,7 @@ impl UsageTracker {
         game_data.total_seconds += delta;
         game_data.last_played = now;
         game_data.session_count += 1;
+        game_data.play_dates.insert(today);
         let total_for_log = game_data.total_seconds;
 
         self.save_data(&data);
@@ -432,6 +441,92 @@ impl UsageTracker {
         all_games.truncate(count);
         
         all_games
+    }
+
+    /// Get all game stats across all PSPs
+    /// Returns a vector of detailed game stats, sorted by playtime descending
+    pub fn get_all_game_stats(&self) -> Vec<(String, String, u64, u32, String)> {
+        let data = self.load_data();
+        
+        // Use a hashmap to aggregate by title
+        use std::collections::HashMap;
+        let mut game_map: HashMap<String, (String, u64, u32, String)> = HashMap::new();
+        
+        for psp_data in data.psps.values() {
+            for game in psp_data.games.values() {
+                // Skip entries with no title
+                if game.title.is_empty() {
+                    continue;
+                }
+                
+                // Aggregate by title
+                if let Some(existing) = game_map.get_mut(&game.title) {
+                    existing.1 += game.total_seconds;
+                    existing.2 += game.session_count;
+                    // Keep the most recent last_played
+                    if game.last_played > existing.3 {
+                        existing.3 = game.last_played.clone();
+                    }
+                } else {
+                    game_map.insert(game.title.clone(), (
+                        game.game_id.clone(),
+                        game.total_seconds,
+                        game.session_count,
+                        game.last_played.clone(),
+                    ));
+                }
+            }
+        }
+        
+        // Convert to vector and sort by playtime descending
+        let mut all_games: Vec<(String, String, u64, u32, String)> = game_map
+            .into_iter()
+            .map(|(title, (game_id, seconds, sessions, last_played))| {
+                (title, game_id, seconds, sessions, last_played)
+            })
+            .collect();
+        
+        all_games.sort_by(|a, b| b.2.cmp(&a.2));
+        
+        all_games
+    }
+
+    /// Get all play dates with the games played on each date
+    /// Returns a HashMap mapping date (YYYY-MM-DD) to list of game titles played that day
+    pub fn get_all_play_dates(&self) -> std::collections::HashMap<String, Vec<String>> {
+        let data = self.load_data();
+        let mut date_games: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        
+        for psp_data in data.psps.values() {
+            for game in psp_data.games.values() {
+                // Skip entries with no title
+                if game.title.is_empty() {
+                    continue;
+                }
+                
+                for date in &game.play_dates {
+                    date_games.entry(date.clone())
+                        .or_insert_with(Vec::new)
+                        .push(game.title.clone());
+                }
+                
+                // Also extract dates from first_played and last_played for backwards compatibility
+                if game.first_played.len() >= 10 {
+                    let date = game.first_played[..10].to_string();
+                    date_games.entry(date)
+                        .or_insert_with(Vec::new)
+                        .push(game.title.clone());
+                }
+                if game.last_played.len() >= 10 {
+                    let date = game.last_played[..10].to_string();
+                    date_games.entry(date)
+                        .or_insert_with(Vec::new)
+                        .push(game.title.clone());
+                }
+            }
+        }
+        
+        date_games
     }
 }
 

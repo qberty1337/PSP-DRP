@@ -42,6 +42,12 @@ crossterm = "0.28"
 # ASCII art generation from images
 artem = "2.0"
 
+# Fuzzy string matching for thumbnail lookup
+strsim = "0.11"
+
+# HTTP client for fetching thumbnail index
+reqwest = { version = "0.11", features = ["json"] }
+
 [profile.release]
 strip = true
 lto = true

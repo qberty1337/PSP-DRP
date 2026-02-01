@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, MouseEvent, MouseEventKind, MouseButton, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -20,6 +20,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph},
     Frame, Terminal,
 };
+use chrono::Datelike;
 
 use crate::protocol::{GameInfo, PspState};
 
@@ -31,6 +32,31 @@ const MAX_LOG_MESSAGES: usize = 50;
 pub enum TuiEvent {
     /// User wants to quit
     Quit,
+    /// User wants to view stats
+    ShowStats,
+    /// User wants to hide stats
+    HideStats,
+    /// User selected a date in the calendar (or None to clear selection)
+    SelectDate(Option<String>),
+}
+
+/// Which view is currently active
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Main,
+    Stats,
+}
+
+/// Game stats for display in stats view
+#[derive(Debug, Clone)]
+pub struct GameStats {
+    pub title: String,
+    #[allow(dead_code)]  // Reserved for future use (filtering, details view)
+    pub game_id: String,
+    pub total_seconds: u64,
+    pub session_count: u32,
+    pub last_played: String,
 }
 
 /// State shared between the server and TUI
@@ -58,6 +84,16 @@ pub struct TuiState {
     pub status_message: String,
     /// Top 3 most played games (title, formatted playtime)
     pub top_played: Vec<(String, String)>,
+    /// Current view mode
+    pub view_mode: ViewMode,
+    /// All game stats for the stats view
+    pub all_game_stats: Vec<GameStats>,
+    /// Scroll offset for stats view
+    pub stats_scroll: usize,
+    /// All dates when games were played, mapping date (YYYY-MM-DD) to game titles
+    pub play_dates: std::collections::HashMap<String, Vec<String>>,
+    /// Currently selected date in calendar (YYYY-MM-DD format), None means show all-time stats
+    pub selected_date: Option<String>,
 }
 
 /// A log entry with timestamp and content
@@ -145,7 +181,7 @@ impl Tui {
     pub fn new() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -154,7 +190,7 @@ impl Tui {
     /// Restore terminal to normal mode
     pub fn restore(&mut self) -> io::Result<()> {
         disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(self.terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
         self.terminal.show_cursor()?;
         Ok(())
     }
@@ -167,21 +203,214 @@ impl Tui {
         Ok(())
     }
 
-    /// Handle keyboard events
-    pub fn handle_events(&mut self, timeout: Duration) -> io::Result<Option<TuiEvent>> {
+    /// Handle keyboard and mouse events
+    pub fn handle_events(&mut self, timeout: Duration, state: &TuiState) -> io::Result<Option<TuiEvent>> {
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') | KeyCode::Esc => {
-                            return Ok(Some(TuiEvent::Quit));
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                                return Ok(Some(TuiEvent::Quit));
+                            }
+                            KeyCode::Esc => {
+                                // Esc quits from main view, goes back from stats view
+                                if state.view_mode == ViewMode::Stats {
+                                    return Ok(Some(TuiEvent::HideStats));
+                                } else {
+                                    return Ok(Some(TuiEvent::Quit));
+                                }
+                            }
+                            KeyCode::Char('s') | KeyCode::Char('S') => {
+                                if state.view_mode == ViewMode::Main {
+                                    return Ok(Some(TuiEvent::ShowStats));
+                                } else {
+                                    return Ok(Some(TuiEvent::HideStats));
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
+                Event::Mouse(mouse) => {
+                    // Only handle clicks in stats view
+                    if state.view_mode == ViewMode::Stats {
+                        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                            // Check if click is in calendar area
+                            let size = self.terminal.size()?;
+                            let term_rect = Rect::new(0, 0, size.width, size.height);
+                            if let Some(clicked_date) = Self::get_clicked_date(mouse, term_rect) {
+                                // If clicking same date, deselect; otherwise select
+                                if state.selected_date.as_ref() == Some(&clicked_date) {
+                                    return Ok(Some(TuiEvent::SelectDate(None)));
+                                } else {
+                                    return Ok(Some(TuiEvent::SelectDate(Some(clicked_date))));
+                                }
+                            } else {
+                                // Clicked outside calendar - clear selection
+                                if state.selected_date.is_some() {
+                                    return Ok(Some(TuiEvent::SelectDate(None)));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(None)
+    }
+    
+    /// Calculate which calendar date was clicked, if any
+    /// Uses the same Layout calculations as render_stats_view for exact position matching
+    fn get_clicked_date(mouse: MouseEvent, term_size: Rect) -> Option<String> {
+        use ratatui::layout::{Layout, Direction, Constraint};
+        use ratatui::widgets::Block;
+        
+        // Recreate the exact layout from render_stats_view
+        let frame_area = term_size;
+        
+        // Outer block - same as render_stats_view
+        let outer_block = Block::default()
+            .borders(ratatui::widgets::Borders::ALL);
+        let inner_area = outer_block.inner(frame_area);
+        
+        // Main vertical layout - same constraints as render_stats_view
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),   // Header/Title
+                Constraint::Length(10),  // Visualization (bar graph + calendar)
+                Constraint::Min(6),      // Stats list
+                Constraint::Length(1),   // Footer
+            ])
+            .split(inner_area);
+        
+        let viz_area = main_chunks[1];
+        
+        // Visualization horizontal layout - same constraints as render_stats_visualization
+        let viz_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(55),  // Bar graph
+                Constraint::Percentage(45),  // Calendar
+            ])
+            .split(viz_area);
+        
+        let calendar_area = viz_chunks[1];
+        
+        // Calendar inner area (accounting for border)
+        let calendar_block = Block::default()
+            .borders(ratatui::widgets::Borders::ALL);
+        let calendar_inner = calendar_block.inner(calendar_area);
+        
+        // Check if click is within calendar inner bounds
+        let x = mouse.column;
+        let y = mouse.row;
+        
+        if x < calendar_inner.x || x >= calendar_inner.x + calendar_inner.width ||
+           y < calendar_inner.y || y >= calendar_inner.y + calendar_inner.height {
+            return None;
+        }
+        
+        // Calculate relative position within calendar inner area
+        let rel_x = (x - calendar_inner.x) as usize;
+        let rel_y = (y - calendar_inner.y) as usize;
+        
+        // Skip header row (month names) and day-of-week row  
+        if rel_y < 2 {
+            return None;
+        }
+        let week = rel_y - 2;
+        if week >= 6 {
+            return None;
+        }
+        
+        // Calculate how many months are displayed based on width (same as render_calendar)
+        let month_width = 21usize;
+        let spacing = 2usize;
+        let available_width = calendar_inner.width as usize;
+        let max_months = ((available_width + spacing) / (month_width + spacing)).max(1).min(12);
+        
+        if max_months == 0 {
+            return None;
+        }
+        
+        // Generate month data (same as render_calendar)
+        let now = chrono::Local::now();
+        let current_year = now.year();
+        let current_month = now.month();
+        
+        let months: Vec<(i32, u32)> = (0..max_months as u32).rev().map(|months_ago| {
+            subtract_months(current_year, current_month, months_ago)
+        }).collect();
+        
+        // Calculate centering (same as render_calendar uses Alignment::Center for Paragraph)
+        let total_content_width = max_months * month_width + (max_months.saturating_sub(1)) * spacing;
+        let left_padding = if available_width > total_content_width {
+            (available_width - total_content_width) / 2
+        } else {
+            0
+        };
+        
+        // Adjust for centering
+        if rel_x < left_padding {
+            return None;
+        }
+        let adjusted_x = rel_x - left_padding;
+        
+        // Check if past the content area
+        if adjusted_x >= total_content_width {
+            return None;
+        }
+        
+        // Find which month column
+        let mut month_idx = 0;
+        let mut found = false;
+        let mut col_start = 0;
+        for i in 0..max_months {
+            let col_end = col_start + month_width;
+            if adjusted_x >= col_start && adjusted_x < col_end {
+                month_idx = i;
+                found = true;
+                break;
+            }
+            col_start = col_end + spacing;
+        }
+        
+        if !found {
+            return None;
+        }
+        
+        // Check if in spacing between months
+        let month_start = month_idx * (month_width + spacing);
+        let month_end = month_start + month_width;
+        if adjusted_x >= month_end {
+            return None;
+        }
+        
+        // Calculate weekday (0-6) from x position within the month
+        let within_month_x = adjusted_x - month_start;
+        let weekday = within_month_x / 3;
+        if weekday >= 7 {
+            return None;
+        }
+        
+        // Get the month info
+        let (year, month) = months.get(month_idx)?;
+        
+        // Calculate the day number
+        let first_day = chrono::NaiveDate::from_ymd_opt(*year, *month, 1)?;
+        let days_in_month = get_days_in_month(*year, *month);
+        let first_weekday = first_day.weekday().num_days_from_monday() as i32;
+        
+        let day_num = week as i32 * 7 + weekday as i32 - first_weekday + 1;
+        
+        if day_num >= 1 && day_num <= days_in_month as i32 {
+            Some(format!("{:04}-{:02}-{:02}", year, month, day_num))
+        } else {
+            None
+        }
     }
 }
 
@@ -193,6 +422,14 @@ impl Drop for Tui {
 
 /// Main UI rendering function
 fn render_ui(frame: &mut Frame, state: &TuiState) {
+    match state.view_mode {
+        ViewMode::Main => render_main_view(frame, state),
+        ViewMode::Stats => render_stats_view(frame, state),
+    }
+}
+
+/// Render the main monitoring view
+fn render_main_view(frame: &mut Frame, state: &TuiState) {
     let area = frame.area();
 
     // Create outer border for the entire app
@@ -603,7 +840,11 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
         Span::styled(" Press ", Style::default().fg(Color::DarkGray)),
         Span::styled("Q", Style::default().fg(Color::Yellow).bold()),
         Span::styled(" to quit ", Style::default().fg(Color::DarkGray)),
-        Span::styled("│", Style::default().fg(Color::Rgb(50, 50, 70))),
+        Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+        Span::styled(" ", Style::default()),
+        Span::styled("S", Style::default().fg(Color::Yellow).bold()),
+        Span::styled(" for stats ", Style::default().fg(Color::DarkGray)),
+        Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
         Span::styled(" ", Style::default()),
         Span::styled(&state.status_message, Style::default().fg(Color::Cyan)),
     ]);
@@ -612,4 +853,518 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &TuiState) {
         .alignment(Alignment::Left);
 
     frame.render_widget(footer, area);
+}
+
+/// Render the stats view showing all games played
+fn render_stats_view(frame: &mut Frame, state: &TuiState) {
+    let area = frame.area();
+
+    // Create outer border for the entire app
+    let outer_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(60, 60, 80)))
+        .style(Style::default().bg(Color::Rgb(15, 15, 25)));
+    
+    frame.render_widget(outer_block.clone(), area);
+    let inner_area = outer_block.inner(area);
+
+    // Stats view layout
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),   // Header/Title
+            Constraint::Length(10),  // Visualization (bar graph + calendar)
+            Constraint::Min(6),      // Stats list
+            Constraint::Length(1),   // Footer
+        ])
+        .split(inner_area);
+
+    render_stats_header(frame, main_chunks[0], state);
+    render_stats_visualization(frame, main_chunks[1], state);
+    render_stats_list(frame, main_chunks[2], state);
+    render_stats_footer(frame, main_chunks[3]);
+}
+
+/// Render stats view header
+fn render_stats_header(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let total_playtime: u64 = state.all_game_stats.iter().map(|g| g.total_seconds).sum();
+    let total_sessions: u32 = state.all_game_stats.iter().map(|g| g.session_count).sum();
+    
+    let header_content = Line::from(vec![
+        Span::styled(" # ", Style::default().fg(Color::Magenta)),
+        Span::styled("GAME STATISTICS", Style::default().fg(Color::White).bold()),
+        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} games", state.all_game_stats.len()), Style::default().fg(Color::Cyan)),
+        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} sessions", total_sessions), Style::default().fg(Color::Yellow)),
+        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Total: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format_duration_long(total_playtime), Style::default().fg(Color::Green).bold()),
+    ]);
+
+    let header = Paragraph::new(header_content)
+        .block(
+            Block::default()
+                .borders(Borders::BOTTOM)
+                .border_style(Style::default().fg(Color::Rgb(60, 60, 80)))
+                .padding(Padding::horizontal(1))
+        )
+        .alignment(Alignment::Center);
+
+    frame.render_widget(header, area);
+}
+
+/// Render visualization section with bar graph and calendar
+fn render_stats_visualization(frame: &mut Frame, area: Rect, state: &TuiState) {
+    // Split into bar graph (left) and calendar (right)
+    let viz_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(55),  // Bar graph
+            Constraint::Percentage(45),  // Calendar
+        ])
+        .split(area);
+
+    render_bar_graph(frame, viz_chunks[0], state);
+    render_calendar(frame, viz_chunks[1], state);
+}
+
+/// Render horizontal bar graph of top games
+fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
+    // Determine title based on whether a date is selected
+    let title = if let Some(ref date) = state.selected_date {
+        // Format date as short date (e.g., "Feb 1")
+        if let Some(parsed) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok() {
+            let month = get_short_month_name(parsed.month());
+            format!(" Games on {} {} ", month, parsed.day())
+        } else {
+            " Top Games ".to_string()
+        }
+    } else {
+        " Top Games ".to_string()
+    };
+    
+    let block = Block::default()
+        .title(Span::styled(title, Style::default().fg(Color::Yellow).bold()))
+        .title_alignment(Alignment::Left)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(50, 50, 70)))
+        .padding(Padding::new(1, 1, 0, 0));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Filter games based on selected date
+    let games_to_show: Vec<&GameStats> = if let Some(ref date) = state.selected_date {
+        // Get games played on the selected date
+        if let Some(game_titles) = state.play_dates.get(date) {
+            state.all_game_stats.iter()
+                .filter(|g| game_titles.contains(&g.title))
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        // Show all games
+        state.all_game_stats.iter().collect()
+    };
+
+    if games_to_show.is_empty() {
+        let empty_msg = if state.selected_date.is_some() {
+            Paragraph::new(Span::styled("No games played", Style::default().fg(Color::DarkGray).italic()))
+        } else {
+            Paragraph::new(Span::styled("No data", Style::default().fg(Color::DarkGray).italic()))
+        };
+        frame.render_widget(empty_msg.alignment(Alignment::Center), inner);
+        return;
+    }
+
+    // Title width - show more of the game name
+    let title_width: usize = 28;
+    
+    // Calculate bar width based on available space (reserve space for title + time + spacing)
+    let bar_area_width = inner.width.saturating_sub(title_width as u16 + 8) as usize;
+
+    // Get max playtime for scaling (from the filtered games)
+    let max_seconds = games_to_show.iter()
+        .map(|g| g.total_seconds)
+        .max()
+        .unwrap_or(1)
+        .max(1) as f64;
+
+    // Create bar lines for top games
+    let bar_colors = [
+        Color::Yellow,
+        Color::Cyan,
+        Color::Magenta,
+        Color::Green,
+        Color::Blue,
+    ];
+    
+    // Build a color map based on all_game_stats order (to keep colors consistent)
+    let game_color_map: std::collections::HashMap<&str, usize> = state.all_game_stats.iter()
+        .enumerate()
+        .map(|(i, g)| (g.title.as_str(), i))
+        .collect();
+
+    let lines: Vec<Line> = games_to_show.iter()
+        .take(inner.height as usize)
+        .map(|game| {
+            // Truncate title with ellipsis
+            let title = if game.title.chars().count() > title_width {
+                let truncated: String = game.title.chars().take(title_width - 3).collect();
+                format!("{}...", truncated)
+            } else {
+                format!("{:<width$}", game.title, width = title_width)
+            };
+
+            // Calculate bar length - linear scaling with minimum of 1
+            let ratio = game.total_seconds as f64 / max_seconds;
+            let bar_len = ((ratio * bar_area_width as f64) as usize).max(1);
+            
+            // Create bar using block characters
+            let bar: String = "█".repeat(bar_len);
+            
+            // Format time
+            let time = format_duration_short(game.total_seconds);
+
+            // Use color based on position in all_game_stats (consistent coloring)
+            let color_idx = game_color_map.get(game.title.as_str()).copied().unwrap_or(0);
+            let color = bar_colors[color_idx % bar_colors.len()];
+            
+            Line::from(vec![
+                Span::styled(title, Style::default().fg(Color::White)),
+                Span::styled(" ", Style::default()),
+                Span::styled(bar, Style::default().fg(color)),
+                Span::styled(format!(" {}", time), Style::default().fg(Color::DarkGray)),
+            ])
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Render calendar heatmap showing past months (responsive to window width)
+fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let block = Block::default()
+        .title(Span::styled(" Activity ", Style::default().fg(Color::Cyan).bold()))
+        .title_alignment(Alignment::Left)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(50, 50, 70)));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let now = chrono::Local::now();
+    let current_year = now.year();
+    let current_month = now.month();
+    let current_day = now.day();
+
+    // Calculate how many months can fit
+    // Each month: 7 days * 3 chars = 21 chars
+    // Spacing between months: 2 chars
+    // Total for N months: N * 21 + (N-1) * 2 = N * 23 - 2
+    let month_width = 21u16;
+    let spacing = 2u16;
+    let available_width = inner.width;
+    
+    // Calculate max months that fit: N * 23 - 2 <= available_width => N <= (available_width + 2) / 23
+    let max_months = ((available_width + spacing) / (month_width + spacing)).max(1).min(12) as u32;
+    
+    // Generate data for calculated months (going back from current month)
+    let months: Vec<(i32, u32, bool)> = (0..max_months).rev().map(|months_ago| {
+        let (y, m) = subtract_months(current_year, current_month, months_ago);
+        let is_current = months_ago == 0;
+        (y, m, is_current)
+    }).collect();
+
+    let num_months = months.len();
+    let mut lines: Vec<Line> = Vec::new();
+    
+    // Header row with month names (each month takes 21 chars: 7 days * 3 chars each)
+    let mut header_spans: Vec<Span> = Vec::new();
+    for (i, (year, month, _)) in months.iter().enumerate() {
+        let month_name = get_short_month_name(*month);
+        // Center month name in 21 char width
+        let header = format!("{} '{}", month_name, year % 100);
+        header_spans.push(Span::styled(format!("{:^21}", header), Style::default().fg(Color::White).bold()));
+        if i < num_months - 1 {
+            header_spans.push(Span::styled("  ", Style::default()));
+        }
+    }
+    lines.push(Line::from(header_spans));
+    
+    // Day-of-week headers
+    let mut dow_spans: Vec<Span> = Vec::new();
+    for i in 0..num_months {
+        dow_spans.push(Span::styled("Mo ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("Tu ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("We ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("Th ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("Fr ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("Sa ", Style::default().fg(Color::DarkGray)));
+        dow_spans.push(Span::styled("Su", Style::default().fg(Color::DarkGray)));
+        if i < num_months - 1 {
+            dow_spans.push(Span::styled("  ", Style::default()));
+        }
+    }
+    lines.push(Line::from(dow_spans));
+    
+    // Bar graph colors - same order as bar graph
+    let game_colors = [
+        Color::Yellow,
+        Color::Cyan,
+        Color::Magenta,
+        Color::Green,
+        Color::Blue,
+    ];
+    
+    // Build a map of game title to color index based on position in all_game_stats
+    let game_color_map: std::collections::HashMap<String, usize> = state.all_game_stats.iter()
+        .enumerate()
+        .map(|(i, g)| (g.title.clone(), i))
+        .collect();
+    
+    // Generate a grid for each week row
+    for week in 0..6 {
+        let mut row_spans: Vec<Span> = Vec::new();
+        
+        for (month_idx, (year, month, is_current)) in months.iter().enumerate() {
+            let first_day = chrono::NaiveDate::from_ymd_opt(*year, *month, 1).unwrap();
+            let days_in_month = get_days_in_month(*year, *month);
+            let first_weekday = first_day.weekday().num_days_from_monday() as i32;
+            
+            // Render 7 days for this week
+            for weekday in 0..7i32 {
+                let day_num = week as i32 * 7 + weekday - first_weekday + 1;
+                
+                if day_num >= 1 && day_num <= days_in_month as i32 {
+                    let day = day_num as u32;
+                    let date_str = format!("{:04}-{:02}-{:02}", year, month, day);
+                    let is_today = *is_current && day == current_day;
+                    
+                    // Check if any games were played this day and get the color
+                    let day_color = if let Some(games) = state.play_dates.get(&date_str) {
+                        // Find the game with the lowest index (most played overall)
+                        games.iter()
+                            .filter_map(|title| game_color_map.get(title).copied())
+                            .min()
+                            .map(|idx| game_colors[idx % game_colors.len()])
+                    } else {
+                        None
+                    };
+                    
+                    let style = if let Some(color) = day_color {
+                        if is_today {
+                            Style::default().fg(Color::Black).bg(color).bold()
+                        } else {
+                            Style::default().fg(color).bold()
+                        }
+                    } else if is_today {
+                        Style::default().fg(Color::Black).bg(Color::White).bold()
+                    } else {
+                        Style::default().fg(Color::Rgb(70, 70, 90))
+                    };
+                    
+                    // Format day with trailing space (except last in month section)
+                    if weekday < 6 {
+                        row_spans.push(Span::styled(format!("{:2} ", day), style));
+                    } else {
+                        row_spans.push(Span::styled(format!("{:2}", day), style));
+                    }
+                } else {
+                    // Empty cell
+                    if weekday < 6 {
+                        row_spans.push(Span::styled("   ", Style::default()));
+                    } else {
+                        row_spans.push(Span::styled("  ", Style::default()));
+                    }
+                }
+            }
+            
+            // Spacing between months
+            if month_idx < num_months - 1 {
+                row_spans.push(Span::styled("  ", Style::default()));
+            }
+        }
+        
+        lines.push(Line::from(row_spans));
+    }
+
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Subtract months from a year/month, handling year rollover
+fn subtract_months(year: i32, month: u32, months_ago: u32) -> (i32, u32) {
+    let total_months = year * 12 + (month as i32 - 1) - months_ago as i32;
+    let new_year = total_months / 12;
+    let new_month = (total_months % 12 + 1) as u32;
+    (new_year, new_month)
+}
+
+/// Get short month name
+fn get_short_month_name(month: u32) -> &'static str {
+    match month {
+        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
+        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
+        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        _ => "???",
+    }
+}
+
+/// Get number of days in a month
+fn get_days_in_month(year: i32, month: u32) -> u32 {
+    let first_day = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+    let next_month = if month == 12 {
+        chrono::NaiveDate::from_ymd_opt(year + 1, 1, 1)
+    } else {
+        chrono::NaiveDate::from_ymd_opt(year, month + 1, 1)
+    }.unwrap();
+    next_month.signed_duration_since(first_day).num_days() as u32
+}
+
+/// Format duration as short string (e.g., "12h" or "45m")
+fn format_duration_short(total_secs: u64) -> String {
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+
+    if hours > 0 {
+        format!("{}h", hours)
+    } else if mins > 0 {
+        format!("{}m", mins)
+    } else {
+        "<1m".to_string()
+    }
+}
+
+/// Render the stats list
+fn render_stats_list(frame: &mut Frame, area: Rect, state: &TuiState) {
+    let block = Block::default()
+        .title(Span::styled(" All Games (sorted by playtime) ", Style::default().fg(Color::Cyan).bold()))
+        .title_alignment(Alignment::Left)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(50, 50, 70)))
+        .padding(Padding::new(1, 1, 0, 0));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if state.all_game_stats.is_empty() {
+        let empty_msg = Paragraph::new(Text::from(vec![
+            Line::from(""),
+            Line::from(Span::styled("No games played yet!", Style::default().fg(Color::DarkGray).italic())),
+            Line::from(""),
+            Line::from(Span::styled("Start playing a game on your PSP to track stats.", Style::default().fg(Color::DarkGray))),
+        ]))
+        .alignment(Alignment::Center);
+        frame.render_widget(empty_msg, inner);
+        return;
+    }
+
+    // Calculate column widths based on available space
+    let available_width = inner.width as usize;
+    let rank_width = 6;       // "#1.  " with medal
+    let playtime_width = 12;  // "999h 59m 59s"
+    let sessions_width = 12;  // "(999 plays)"
+    let last_played_width = 12; // "MM-DD HH:MM"
+    let fixed_width = rank_width + playtime_width + sessions_width + last_played_width + 6; // separators
+    let title_width = available_width.saturating_sub(fixed_width).max(20);
+
+    // Create list items
+    let items: Vec<ListItem> = state.all_game_stats
+        .iter()
+        .enumerate()
+        .map(|(i, game)| {
+            let rank = i + 1;
+            let rank_color = match rank {
+                1 => Color::Yellow,     // Gold
+                2 => Color::Gray,       // Silver  
+                3 => Color::Rgb(205, 127, 50), // Bronze
+                _ => Color::DarkGray,
+            };
+            let rank_prefix = match rank {
+                1 => "[1]",
+                2 => "[2]",
+                3 => "[3]",
+                _ => "   ",
+            };
+
+            // Truncate title if needed
+            let display_title = if game.title.len() > title_width {
+                format!("{}...", &game.title[..title_width.saturating_sub(3)])
+            } else {
+                game.title.clone()
+            };
+
+            // Format playtime
+            let playtime = format_duration_long(game.total_seconds);
+
+            // Format session count
+            let sessions = format!(
+                "({} {})",
+                game.session_count,
+                if game.session_count == 1 { "play" } else { "plays" }
+            );
+
+            // Format last played (extract just date/time part)
+            let last_played = if game.last_played.len() >= 16 {
+                // Format: "YYYY-MM-DD HH:MM" -> "MM-DD HH:MM"
+                game.last_played[5..16].to_string()
+            } else {
+                game.last_played.clone()
+            };
+
+            let content = Line::from(vec![
+                Span::styled(rank_prefix, Style::default().fg(rank_color).bold()),
+                Span::styled(format!("{:>2}. ", rank), Style::default().fg(rank_color)),
+                Span::styled(format!("{:<width$}", display_title, width = title_width), Style::default().fg(Color::White).bold()),
+                Span::styled("  ", Style::default()),
+                Span::styled(format!("{:>12}", playtime), Style::default().fg(Color::Green)),
+                Span::styled("  ", Style::default()),
+                Span::styled(format!("{:<12}", sessions), Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{:>11}", last_played), Style::default().fg(Color::DarkGray)),
+            ]);
+            ListItem::new(content)
+        })
+        .collect();
+
+    let list = List::new(items);
+    frame.render_widget(list, inner);
+}
+
+/// Render stats view footer
+fn render_stats_footer(frame: &mut Frame, area: Rect) {
+    let footer_content = Line::from(vec![
+        Span::styled(" Press ", Style::default().fg(Color::DarkGray)),
+        Span::styled("S", Style::default().fg(Color::Yellow).bold()),
+        Span::styled(" or ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Esc", Style::default().fg(Color::Yellow).bold()),
+        Span::styled(" to go back ", Style::default().fg(Color::DarkGray)),
+        Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+        Span::styled(" ", Style::default()),
+        Span::styled("Q", Style::default().fg(Color::Yellow).bold()),
+        Span::styled(" to quit", Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let footer = Paragraph::new(footer_content)
+        .alignment(Alignment::Left);
+
+    frame.render_widget(footer, area);
+}
+
+/// Format seconds as duration string (e.g., "12h 34m 56s")
+fn format_duration_long(total_secs: u64) -> String {
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+    let secs = total_secs % 60;
+
+    if hours > 0 {
+        format!("{}h {}m {}s", hours, mins, secs)
+    } else if mins > 0 {
+        format!("{}m {}s", mins, secs)
+    } else {
+        format!("{}s", secs)
+    }
 }

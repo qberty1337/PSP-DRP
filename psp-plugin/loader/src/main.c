@@ -21,9 +21,147 @@ PSP_MODULE_INFO(LOADER_MODULE_NAME, PSP_MODULE_USER, 1, 0);
 #define CONFIG_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp.ini"
 #define HEX_CHARS "0123456789ABCDEF"
 
+/* Error code for module already loaded */
+#define SCE_KERNEL_ERROR_EXCLUSIVE_LOAD ((int)0x80020112)
+
 #define RPC_START_MAGIC 0x31504352
 
+/**
+ * Games that are completely incompatible with the plugin.
+ * The net PRX will NOT be loaded for these games.
+ *
+ * NOTE: Due to PSP architecture limitations, game detection only works AFTER
+ * the loader thread has started. Some games (like PQ) freeze if ANY thread
+ * is created during their boot sequence. For these games, users must manually
+ * exclude the plugin from loading via GAME.TXT configuration.
+ *
+ * This list only helps for games that tolerate thread creation but have
+ * other compatibility issues with the net PRX.
+ */
+static const char *g_incompatible_games[] = {
+    "ULUS10046", /* PQ: Practical Intelligence Quotient - freezes on ANY thread
+                    creation */
+    NULL         /* End marker */
+};
+
 static int g_logging_enabled = 0;
+
+/**
+ * Simple SFO header structure for game ID detection.
+ */
+typedef struct {
+  unsigned int magic;
+  unsigned int version;
+  unsigned int key_table_offset;
+  unsigned int data_table_offset;
+  unsigned int num_entries;
+} SfoHeader;
+
+typedef struct {
+  unsigned short key_offset;
+  unsigned short data_format;
+  unsigned int data_len;
+  unsigned int data_max_len;
+  unsigned int data_offset;
+} SfoEntry;
+
+/**
+ * Get current game ID from PARAM.SFO.
+ * Returns 0 on success, -1 on failure.
+ */
+static int get_current_game_id(char *game_id_out, int max_len) {
+  /* Try UMD first, then memory stick paths */
+  static const char *sfo_paths[] = {
+      "disc0:/PSP_GAME/PARAM.SFO",
+      "ms0:/PSP/GAME/__SCE__*/PARAM.SFO", /* Can't use wildcard, try specific */
+      NULL};
+
+  SceUID fd;
+  SfoHeader header;
+  SfoEntry entry;
+  char key_buf[32];
+  int i;
+  int found = 0;
+
+  (void)sfo_paths; /* Unused for now */
+
+  /* Try disc0 first (UMD games) */
+  fd = sceIoOpen("disc0:/PSP_GAME/PARAM.SFO", PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    /* Try EBOOT path for digital games - use sceIoGetstat to find */
+    return -1; /* Can't detect game */
+  }
+
+  /* Read SFO header */
+  if (sceIoRead(fd, &header, sizeof(header)) != sizeof(header)) {
+    sceIoClose(fd);
+    return -1;
+  }
+
+  /* Check magic (0x46535000 = "PSF\0") */
+  if (header.magic != 0x46535000) {
+    sceIoClose(fd);
+    return -1;
+  }
+
+  /* Search for DISC_ID entry */
+  for (i = 0; i < (int)header.num_entries && !found; i++) {
+    sceIoLseek(fd, 20 + i * 16, PSP_SEEK_SET);
+    if (sceIoRead(fd, &entry, sizeof(entry)) != sizeof(entry)) {
+      break;
+    }
+
+    /* Read key name */
+    sceIoLseek(fd, header.key_table_offset + entry.key_offset, PSP_SEEK_SET);
+    if (sceIoRead(fd, key_buf, sizeof(key_buf) - 1) <= 0) {
+      break;
+    }
+    key_buf[sizeof(key_buf) - 1] = '\0';
+
+    /* Check if this is DISC_ID */
+    if (key_buf[0] == 'D' && key_buf[1] == 'I' && key_buf[2] == 'S' &&
+        key_buf[3] == 'C' && key_buf[4] == '_' && key_buf[5] == 'I' &&
+        key_buf[6] == 'D' && key_buf[7] == '\0') {
+      /* Read the value */
+      sceIoLseek(fd, header.data_table_offset + entry.data_offset,
+                 PSP_SEEK_SET);
+      int read_len =
+          (entry.data_len < (unsigned int)max_len) ? (int)entry.data_len
+                                                   : max_len - 1;
+      if (sceIoRead(fd, game_id_out, read_len) > 0) {
+        game_id_out[read_len] = '\0';
+        found = 1;
+      }
+    }
+  }
+
+  sceIoClose(fd);
+  return found ? 0 : -1;
+}
+
+/**
+ * Check if a game ID is in the incompatible list.
+ */
+static int is_game_incompatible(const char *game_id) {
+  int i;
+  int j;
+  if (game_id == NULL || game_id[0] == '\0') {
+    return 0;
+  }
+  for (i = 0; g_incompatible_games[i] != NULL; i++) {
+    /* Simple string compare */
+    const char *a = game_id;
+    const char *b = g_incompatible_games[i];
+    j = 0;
+    while (a[j] != '\0' && b[j] != '\0' && a[j] == b[j]) {
+      j++;
+    }
+    if (a[j] == '\0' && b[j] == '\0') {
+      return 1; /* Match */
+    }
+  }
+  return 0;
+}
 
 #ifndef START_PROFILE_ID
 #define START_PROFILE_ID 1
@@ -293,12 +431,96 @@ static void load_logging_enabled(void) {
   g_logging_enabled = 0;
 }
 
+static int parse_int(const char *val) {
+  int result = 0;
+  int negative = 0;
+  if (val == NULL) {
+    return 0;
+  }
+  while (*val == ' ' || *val == '\t') {
+    val++;
+  }
+  if (*val == '-') {
+    negative = 1;
+    val++;
+  }
+  while (*val >= '0' && *val <= '9') {
+    result = result * 10 + (*val - '0');
+    val++;
+  }
+  return negative ? -result : result;
+}
+
+static int load_startup_delay(void) {
+  char buf[2048];
+  int len;
+  char *line;
+  char *next;
+  SceUID fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return AUTO_START_DELAY_MS;
+  }
+  len = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (len <= 0) {
+    return AUTO_START_DELAY_MS;
+  }
+  buf[len] = '\0';
+  line = buf;
+  while (*line != '\0') {
+    char *p = line;
+    char *eq = NULL;
+    next = strchr(line, '\n');
+    if (next != NULL) {
+      *next = '\0';
+      next++;
+    }
+
+    while (*p == ' ' || *p == '\t' || *p == '\r') {
+      p++;
+    }
+    if (*p == '#' || *p == ';' || *p == '\0') {
+      line = (next != NULL) ? next : (line + strlen(line));
+      continue;
+    }
+
+    eq = strchr(p, '=');
+    if (eq != NULL) {
+      char *key_end = eq - 1;
+      char *val = eq + 1;
+      while (key_end > p && (*key_end == ' ' || *key_end == '\t')) {
+        *key_end-- = '\0';
+      }
+      *eq = '\0';
+      while (*val == ' ' || *val == '\t') {
+        val++;
+      }
+      if (token_equals(p, "STARTUP_DELAY_MS")) {
+        int delay = parse_int(val);
+        if (delay >= 0) {
+          return delay;
+        }
+        return AUTO_START_DELAY_MS;
+      }
+    }
+
+    line = (next != NULL) ? next : (line + strlen(line));
+  }
+
+  return AUTO_START_DELAY_MS;
+}
+
 static int load_net_plugin(void) {
   char msg[12];
   char hex[9];
   int i;
   SceUID modid = sceKernelLoadModule(NET_PRX_PATH, 0, NULL);
   if (modid < 0) {
+    /* Check if module is already loaded */
+    if (modid == SCE_KERNEL_ERROR_EXCLUSIVE_LOAD) {
+      loader_log_raw("Net PRX already loaded");
+      return 0; /* Success - module is already running */
+    }
     loader_log_raw("Load net PRX failed");
     u32_to_hex(hex, (unsigned int)modid);
     msg[0] = '0';
@@ -360,18 +582,44 @@ static int auto_start_thread(SceSize args, void *argp) {
   SceCtrlData pad;
   int attempts = 0;
   int max_attempts = AUTO_START_MAX_ATTEMPTS;
+  int startup_delay = load_startup_delay();
+  char game_id[16] = {0};
 
   sceCtrlSetSamplingCycle(0);
   sceCtrlSetSamplingMode(PSP_CTRL_MODE_DIGITAL);
 
   loader_log_raw("Auto-start thread delay");
-  sceKernelDelayThread(AUTO_START_DELAY_MS * 1000);
+  sceKernelDelayThread(startup_delay * 1000);
 
-  if (sceCtrlPeekBufferPositive(&pad, 1) > 0) {
-    unsigned int skip_button = load_skip_button();
-    if (skip_button != 0 && (pad.Buttons & skip_button)) {
-      loader_log_raw("Auto-start skipped (skip button held)");
+  /* Check for incompatible games BEFORE loading net PRX */
+  if (get_current_game_id(game_id, sizeof(game_id)) == 0) {
+    loader_log_raw("Detected game:");
+    loader_log_raw(game_id);
+    if (is_game_incompatible(game_id)) {
+      loader_log_raw("Game incompatible, skipping net PRX");
       return 0;
+    }
+  }
+
+  {
+    unsigned int skip_button = load_skip_button();
+    if (sceCtrlPeekBufferPositive(&pad, 1) > 0) {
+      if (skip_button != 0 && (pad.Buttons & skip_button)) {
+        loader_log_raw("Auto-start skipped (skip button held)");
+        loader_log_raw("Waiting for SELECT+skip to reactivate...");
+
+        /* Wait for reactivation combo: SELECT + skip button */
+        while (1) {
+          sceKernelDelayThread(100 * 1000); /* 100ms polling */
+          if (sceCtrlPeekBufferPositive(&pad, 1) > 0) {
+            if ((pad.Buttons & PSP_CTRL_SELECT) &&
+                (pad.Buttons & skip_button)) {
+              loader_log_raw("Reactivation combo detected!");
+              break; /* Exit wait loop and proceed to load */
+            }
+          }
+        }
+      }
     }
   }
 
@@ -398,7 +646,6 @@ int module_start(SceSize args, void *argp) {
   (void)argp;
 
   load_logging_enabled();
-
   loader_log_raw("module_start called");
 
 #ifdef AUTO_START_NET

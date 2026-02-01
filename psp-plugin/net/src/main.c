@@ -2,6 +2,7 @@
  * PSP DRP Net Plugin
  */
 
+#include <pspdisplay.h>
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <pspnet.h>
@@ -18,6 +19,56 @@
 #include "discord_rpc.h"
 #include "game_detect.h"
 #include "network.h"
+
+/**
+ * Games that CANNOT use vblank wait (display system conflicts).
+ * These use passive sceKernelDelayThread instead.
+ */
+static const char *g_no_vblank_games[] = {
+    "ULUS10046", /* PQ: Practical Intelligence Quotient */
+    NULL         /* End marker */
+};
+
+/**
+ * Games that are completely incompatible - plugin exits immediately.
+ */
+static const char *g_incompatible_games[] = {
+    "ULUS10046", /* PQ: Practical Intelligence Quotient - freezes during any
+                    thread creation */
+    NULL         /* End marker */
+};
+
+/**
+ * Check if a game is completely incompatible (plugin should exit).
+ */
+static int is_incompatible_game(const char *game_id) {
+  int i;
+  if (game_id == NULL || game_id[0] == '\0') {
+    return 0;
+  }
+  for (i = 0; g_incompatible_games[i] != NULL; i++) {
+    if (strcmp(game_id, g_incompatible_games[i]) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Check if a game should skip vblank wait and use passive sleep.
+ */
+static int should_skip_vblank(const char *game_id) {
+  int i;
+  if (game_id == NULL || game_id[0] == '\0') {
+    return 0;
+  }
+  for (i = 0; g_no_vblank_games[i] != NULL; i++) {
+    if (strcmp(game_id, g_no_vblank_games[i]) == 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
 
 PSP_MODULE_INFO("PSPDRP_Net", PSP_MODULE_USER, 1, 0);
 
@@ -119,14 +170,27 @@ static SceUInt64 get_time_us(void) {
   return clock.low + ((SceUInt64)clock.hi << 32);
 }
 
+/**
+ * Wait for N vblanks before network init.
+ * Each vblank is ~16.67ms at 60fps, so 300 vblanks = ~5 seconds.
+ * NO LOGGING during wait - some games are sensitive to memory stick I/O.
+ */
+static void wait_for_vblanks(int count) {
+  int i;
+
+  for (i = 0; i < count && g_running; i++) {
+    sceDisplayWaitVblankStart();
+  }
+}
+
 static int plugin_thread(SceSize args, void *argp) {
   (void)args;
   (void)argp;
 
   GameInfo new_game;
   SceUInt64 now;
+  char early_game_id[10] = {0};
 
-  sceKernelDelayThread(2 * 1000 * 1000);
   net_log("Net thread started");
 
   if (config_load(&g_config) < 0) {
@@ -136,10 +200,10 @@ static int plugin_thread(SceSize args, void *argp) {
   /* Set logging flag from config */
   g_logging_enabled = g_config.enable_logging;
 
-  net_log("Config: enabled=%d ip=%s port=%d auto=%d always=%d icons=%d "
+  net_log("Config: enabled=%d ip=%s port=%d auto=%d icons=%d "
           "poll_ms=%lu hb_ms=%lu update_ms=%lu timeout_s=%lu send_once=%d",
           g_config.enabled, g_config.desktop_ip, g_config.port,
-          g_config.auto_discovery, g_config.always_active, g_config.send_icons,
+          g_config.auto_discovery, g_config.send_icons,
           (unsigned long)g_config.poll_interval_ms,
           (unsigned long)g_config.heartbeat_interval_ms,
           (unsigned long)g_config.game_update_interval_ms,
@@ -151,6 +215,74 @@ static int plugin_thread(SceSize args, void *argp) {
   }
 
   game_detect_init();
+
+  net_log("=== DEBUG: Starting game detection ===");
+
+  /* Early game detection and vblank wait for ALL games */
+  if (!g_started_from_ui) {
+    int vblank_count = g_config.vblank_wait; /* Use global config value */
+    int game_vblank;
+
+    net_log("DEBUG: Calling game_detect_current");
+    if (game_detect_current(&new_game) == 0 && new_game.game_id[0] != '\0') {
+      strncpy(early_game_id, new_game.game_id, sizeof(early_game_id) - 1);
+      net_log("Early game detect: %s title=%s", early_game_id, new_game.title);
+
+      /* Check if this game is completely incompatible */
+      if (is_incompatible_game(early_game_id)) {
+        net_log("Game %s is incompatible, exiting plugin thread",
+                early_game_id);
+        return 0;
+      }
+
+      /* Check for per-game vblank override (e.g., NPUH10117_vblank_wait = 600)
+       */
+      game_vblank = config_get_game_vblank_wait(early_game_id);
+      if (game_vblank >= 0) {
+        vblank_count = game_vblank;
+        net_log("Using per-game vblank_wait=%d for %s", vblank_count,
+                early_game_id);
+      }
+    } else {
+      net_log("No game detected, using config vblank_wait=%d", vblank_count);
+    }
+
+    /*
+     * Wait before network init.
+     * Some games (PQ) conflict with sceDisplayWaitVblankStart, so use passive
+     * sleep. Most games work fine with vblank wait.
+     */
+    if (should_skip_vblank(early_game_id)) {
+      /* PQ and similar: use passive sleep instead of vblank wait */
+      int delay_ms = (vblank_count * 1000) / 60; /* Convert vblanks to ms */
+      net_log("Using passive sleep for %s: %d ms", early_game_id, delay_ms);
+      sceKernelDelayThread(delay_ms * 1000);
+    } else {
+      /* Normal games: use vblank wait */
+      net_log("DEBUG: vblank_wait=%d (~%d seconds)", vblank_count,
+              vblank_count / 60);
+      wait_for_vblanks(vblank_count);
+    }
+    net_log("DEBUG: Wait finished");
+  }
+
+  net_log("=== DEBUG: About to check network ===");
+
+  /* Try to initialize/reuse network connection. */
+  if (!g_network_initialized && !g_started_from_ui) {
+    net_log("=== Checking for existing network connection ===");
+
+    /* Check if network is already connected */
+    int early_init = network_init();
+    if (early_init == 0) {
+      g_network_initialized = 1;
+      net_log("=== Network already initialized ===");
+    } else {
+      net_log("=== Network not ready, will retry in main loop ===");
+      net_log("network_init returned: 0x%08X", (unsigned int)early_init);
+    }
+  }
+
   if (g_started_from_ui) {
     memset(&g_current_game, 0, sizeof(g_current_game));
     strcpy(g_current_game.game_id, "XMB");
@@ -166,6 +298,8 @@ static int plugin_thread(SceSize args, void *argp) {
 
     if (!g_network_initialized && sceWlanGetSwitchState() == 1) {
       g_init_attempts++;
+
+      /* Retry with connection attempt */
       net_log("network_init attempt=%d", g_init_attempts);
       int net_res = network_init();
       if (net_res == 0) {
@@ -194,6 +328,13 @@ static int plugin_thread(SceSize args, void *argp) {
         }
       } else {
         net_log("network_init failed: 0x%08X", (unsigned int)net_res);
+
+        /* On first failure, try force cleanup to take over from game */
+        if (g_init_attempts == 1) {
+          net_log("First failure, attempting force cleanup");
+          network_force_cleanup();
+        }
+
         sceKernelDelayThread(2000 * 1000);
       }
     }
@@ -405,7 +546,12 @@ int module_start(SceSize args, void *argp) {
     }
   }
 
-  g_mode_label = g_started_from_ui ? "VSH" : "GAME";
+  /* Set mode label based on how we were loaded */
+  if (g_started_from_ui) {
+    g_mode_label = "VSH";
+  } else {
+    g_mode_label = "GAME";
+  }
 
   net_log("module_start called");
   if (argp != NULL && args >= (SceSize)sizeof(RpcStartArgs)) {

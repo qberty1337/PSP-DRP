@@ -8,6 +8,7 @@ mod config;
 mod discord;
 mod protocol;
 mod server;
+mod thumbnail_matcher;
 mod tui;
 mod usage_tracker;
 
@@ -23,7 +24,8 @@ use ascii_art::{IconManager, IconMode};
 use config::Config;
 use discord::DiscordManager;
 use server::{Server, ServerCommand, ServerEvent};
-use tui::{Tui, TuiEvent, TuiState};
+use thumbnail_matcher::ThumbnailMatcher;
+use tui::{GameStats, Tui, TuiEvent, TuiState, ViewMode};
 use usage_tracker::UsageTracker;
 
 /// Application refresh rate (10 Hz)
@@ -68,9 +70,7 @@ async fn main() -> Result<()> {
             loop {
                 let state = tui_state.read().await;
                 tui.draw(&state)?;
-                drop(state);
-                
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                     return Ok(());
                 }
             }
@@ -87,9 +87,7 @@ async fn main() -> Result<()> {
         loop {
             let state = tui_state.read().await;
             tui.draw(&state)?;
-            drop(state);
-            
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                 return Ok(());
             }
         }
@@ -139,6 +137,27 @@ async fn main() -> Result<()> {
     let icon_mode = IconMode::from(config.display.icon_mode.as_str());
     let mut icon_manager = IconManager::new_with_mode(icon_mode);
 
+    // Initialize thumbnail matcher for Discord game icons
+    let thumbnail_matcher = Arc::new(ThumbnailMatcher::new());
+    
+    // Load thumbnail index in background
+    {
+        let matcher = thumbnail_matcher.clone();
+        let tui_state_clone = tui_state.clone();
+        tokio::spawn(async move {
+            match matcher.load_index().await {
+                Ok(count) => {
+                    let mut state = tui_state_clone.write().await;
+                    state.log_info(&format!("Loaded {} game thumbnails from libretro", count));
+                }
+                Err(e) => {
+                    let mut state = tui_state_clone.write().await;
+                    state.log_warn(&format!("Failed to load thumbnails: {}", e));
+                }
+            }
+        });
+    }
+
     // Create server event channel
     let (event_tx, mut event_rx) = mpsc::channel::<ServerEvent>(100);
 
@@ -153,9 +172,7 @@ async fn main() -> Result<()> {
         loop {
             let state = tui_state.read().await;
             tui.draw(&state)?;
-            drop(state);
-            
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                 return Ok(());
             }
         }
@@ -193,14 +210,45 @@ async fn main() -> Result<()> {
                     &mut usage_tracker,
                     &mut icon_manager,
                     &server_cmd_tx,
+                    &thumbnail_matcher,
                 ).await;
             }
 
             // Refresh TUI
             _ = refresh_interval.tick() => {
-                // Handle input
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(INPUT_POLL_MS))? {
-                    break;
+                // Handle input (pass the state for mouse click detection)
+                let state_for_events = tui_state.read().await.clone();
+                match tui.handle_events(Duration::from_millis(INPUT_POLL_MS), &state_for_events)? {
+                    Some(TuiEvent::Quit) => break,
+                    Some(TuiEvent::ShowStats) => {
+                        // Load all game stats and play dates, then switch to stats view
+                        let all_stats = usage_tracker.get_all_game_stats();
+                        let play_dates = usage_tracker.get_all_play_dates();
+                        let mut state = tui_state.write().await;
+                        state.all_game_stats = all_stats.into_iter()
+                            .map(|(title, game_id, seconds, sessions, last_played)| GameStats {
+                                title,
+                                game_id,
+                                total_seconds: seconds,
+                                session_count: sessions,
+                                last_played,
+                            })
+                            .collect();
+                        state.play_dates = play_dates;
+                        state.view_mode = ViewMode::Stats;
+                        state.stats_scroll = 0;
+                        state.selected_date = None;
+                    }
+                    Some(TuiEvent::HideStats) => {
+                        let mut state = tui_state.write().await;
+                        state.view_mode = ViewMode::Main;
+                        state.selected_date = None;
+                    }
+                    Some(TuiEvent::SelectDate(date)) => {
+                        let mut state = tui_state.write().await;
+                        state.selected_date = date;
+                    }
+                    None => {}
                 }
 
                 // Try Discord reconnection if needed
@@ -272,10 +320,10 @@ async fn connect_discord_with_ui(
             // Wait with TUI responsiveness
             for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10))? {
+                let state = tui_state.read().await;
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10), &state)? {
                     return Err(anyhow::anyhow!("User quit during Discord connection"));
                 }
-                let state = tui_state.read().await;
                 tui.draw(&state)?;
             }
         }
@@ -292,6 +340,7 @@ async fn handle_server_event(
     usage_tracker: &mut UsageTracker,
     icon_manager: &mut IconManager,
     server_cmd_tx: &mpsc::Sender<ServerCommand>,
+    thumbnail_matcher: &Arc<ThumbnailMatcher>,
 ) {
     match event {
         ServerEvent::PspConnected { addr, name, battery } => {
@@ -398,8 +447,17 @@ async fn handle_server_event(
                     .collect();
             }
             
-            // Update Discord presence
-            if let Err(e) = discord.update_presence(&info).await {
+            // Update Discord presence with thumbnail lookup
+            let thumbnail_url = thumbnail_matcher.find_thumbnail(&info.game_id, &info.title).await;
+            if let Some(ref _url) = thumbnail_url {
+                if game_changed {
+                    state.log_info(&format!("Found thumbnail for {}", info.title));
+                }
+            }
+            drop(state); // Release lock before async Discord call
+            
+            if let Err(e) = discord.update_presence(&info, thumbnail_url.as_deref()).await {
+                let mut state = tui_state.write().await;
                 state.log_warn(&format!("Discord error: {}", e));
             }
         }

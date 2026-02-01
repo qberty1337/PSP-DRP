@@ -102,4 +102,10 @@ int network_poll_message(char *game_id_out);
  */
 int network_poll_icon_request(char *game_id_out);
 
+/**
+ * Force cleanup any existing network state
+ * Call this when network_init fails to try to recover
+ */
+void network_force_cleanup(void);
+
 #endif /* NETWORK_H */

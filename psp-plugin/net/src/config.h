@@ -30,9 +30,6 @@ typedef struct {
   /* Enable auto-discovery */
   int auto_discovery;
 
-  /* When to be active: 0=game only, 1=always */
-  int always_active;
-
   /* Send game icons */
   int send_icons;
 
@@ -56,6 +53,10 @@ typedef struct {
 
   /* Enable logging to memory stick */
   int enable_logging;
+
+  /* Vblank wait count before network init (default: 300 = ~5 seconds at 60fps)
+   */
+  uint32_t vblank_wait;
 } PluginConfig;
 
 /**
@@ -80,5 +81,14 @@ int config_load(PluginConfig *config);
  * @return 0 on success, negative on error
  */
 int config_save(const PluginConfig *config);
+
+/**
+ * Get game-specific vblank wait from config.
+ * Looks for GAMEID_vblank_wait = VALUE in the INI file.
+ *
+ * @param game_id Game ID (e.g., "NPUH10117")
+ * @return Vblank count if found, -1 if not found or empty
+ */
+int config_get_game_vblank_wait(const char *game_id);
 
 #endif /* CONFIG_H */

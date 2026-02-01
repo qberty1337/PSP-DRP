@@ -27,7 +27,6 @@ void config_set_defaults(PluginConfig *config) {
   config->desktop_ip[0] = '\0'; /* Empty = use discovery */
   config->port = DEFAULT_PORT;
   config->auto_discovery = 1;
-  config->always_active = 0;
   config->send_icons = 1;
   strcpy(config->psp_name, "PSP");
   config->poll_interval_ms = 5000;
@@ -36,6 +35,7 @@ void config_set_defaults(PluginConfig *config) {
   config->connect_timeout_s = 30;
   config->send_once = 0;
   config->enable_logging = 0;
+  config->vblank_wait = 300; /* Default: ~5 seconds at 60fps */
 }
 
 /**
@@ -122,16 +122,21 @@ int config_save(const PluginConfig *config) {
       "; Enable auto-discovery of desktop app (1 = enabled, 0 = disabled)\n"
       "auto_discovery = %d\n"
       "\n"
-      "; When to show presence:\n"
-      "; 0 = only when playing games\n"
-      "; 1 = always (including XMB, videos, music)\n"
-      "always_active = %d\n"
-      "\n"
       "; Send game icons to desktop app (1 = enabled, 0 = disabled)\n"
       "send_icons = %d\n"
       "\n"
       "; Custom name for this PSP (shown in Discord)\n"
       "psp_name = %s\n"
+      "\n"
+      "; Vblank wait before network init (default: 300 = ~5 seconds)\n"
+      "; Each vblank is ~16.67ms at 60fps. Increase if game crashes.\n"
+      "; Recommended values: 300 (5s), 600 (10s for sensitive games)\n"
+      "vblank_wait = %lu\n"
+      "\n"
+      "; Enable logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)\n"
+      "enable_logging = %d\n"
+      "\n"
+      "; === Advanced Settings ===\n"
       "\n"
       "; Game polling interval in milliseconds (default: 5000)\n"
       "poll_interval_ms = %lu\n"
@@ -150,8 +155,8 @@ int config_save(const PluginConfig *config) {
       "; When enabled, sends one update on plugin load then unloads network\n"
       "send_once = %d\n",
       config->enabled, config->desktop_ip, config->port, config->auto_discovery,
-      config->always_active, config->send_icons, config->psp_name,
-      (unsigned long)config->poll_interval_ms,
+      config->send_icons, config->psp_name, (unsigned long)config->vblank_wait,
+      config->enable_logging, (unsigned long)config->poll_interval_ms,
       (unsigned long)config->heartbeat_interval_ms,
       (unsigned long)config->game_update_interval_ms,
       (unsigned long)config->connect_timeout_s, config->send_once);
@@ -212,8 +217,6 @@ static void parse_line(const char *line, PluginConfig *config) {
     }
   } else if (strcmp(key, "auto_discovery") == 0) {
     config->auto_discovery = parse_bool(value);
-  } else if (strcmp(key, "always_active") == 0) {
-    config->always_active = parse_bool(value);
   } else if (strcmp(key, "send_icons") == 0) {
     config->send_icons = parse_bool(value);
   } else if (strcmp(key, "psp_name") == 0) {
@@ -249,6 +252,11 @@ static void parse_line(const char *line, PluginConfig *config) {
     config->send_once = parse_bool(value);
   } else if (strcmp(key, "enable_logging") == 0) {
     config->enable_logging = parse_bool(value);
+  } else if (strcmp(key, "vblank_wait") == 0) {
+    config->vblank_wait = (uint32_t)atoi(value);
+    if (config->vblank_wait > 1800) {
+      config->vblank_wait = 1800; /* Max 30 seconds */
+    }
   }
 }
 
@@ -305,4 +313,100 @@ static int parse_bool(const char *value) {
     return 1;
   }
   return 0;
+}
+
+/**
+ * Get game-specific vblank wait from config.
+ * Looks for GAMEID_vblank_wait = VALUE in the INI file.
+ * Returns the value if found, or -1 if not found.
+ */
+int config_get_game_vblank_wait(const char *game_id) {
+  SceUID fd;
+  char buffer[4096];
+  char target_key[32];
+  int bytes_read;
+  char *found;
+  char *eq;
+  char *val_start;
+  char *line_start;
+  int value;
+
+  if (game_id == NULL || game_id[0] == '\0') {
+    return -1;
+  }
+
+  /* Build the key we're looking for: GAMEID_vblank_wait */
+  snprintf(target_key, sizeof(target_key), "%s_vblank_wait", game_id);
+
+  fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  bytes_read = sceIoRead(fd, buffer, sizeof(buffer) - 1);
+  sceIoClose(fd);
+
+  if (bytes_read <= 0) {
+    return -1;
+  }
+
+  buffer[bytes_read] = '\0';
+
+  /* Search for the key in the buffer */
+  found = strstr(buffer, target_key);
+  while (found != NULL) {
+    /* Check if this occurrence is at the start of a line (not a comment) */
+    line_start = found;
+
+    /* Walk backwards to find line start */
+    while (line_start > buffer && *(line_start - 1) != '\n' &&
+           *(line_start - 1) != '\r') {
+      line_start--;
+    }
+
+    /* Skip whitespace at line start */
+    while (*line_start == ' ' || *line_start == '\t') {
+      line_start++;
+    }
+
+    /* If line starts with ; or #, it's a comment - skip */
+    if (*line_start == ';' || *line_start == '#') {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Make sure the key starts at the beginning of the non-comment part */
+    if (line_start != found) {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Find the = after the key */
+    eq = strchr(found, '=');
+    if (eq == NULL) {
+      found = strstr(found + 1, target_key);
+      continue;
+    }
+
+    /* Get the value after = */
+    val_start = eq + 1;
+    while (*val_start == ' ' || *val_start == '\t') {
+      val_start++;
+    }
+
+    /* Check for empty value */
+    if (*val_start == '\0' || *val_start == '\n' || *val_start == '\r' ||
+        *val_start == ';') {
+      return -1;
+    }
+
+    /* Parse the vblank count */
+    value = atoi(val_start);
+    if (value >= 0) {
+      return value;
+    }
+    return -1;
+  }
+
+  return -1;
 }

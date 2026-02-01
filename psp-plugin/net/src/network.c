@@ -199,6 +199,39 @@ void network_shutdown(void) {
 }
 
 /**
+ * Force cleanup any existing network state
+ * Call this when network_init fails to try to recover
+ */
+void network_force_cleanup(void) {
+  int ret;
+  net_log("force_cleanup: attempting network takeover");
+
+  /* Try to disconnect any existing connection */
+  ret = sceNetApctlDisconnect();
+  net_log("force_cleanup: disconnect ret=0x%08X", (unsigned int)ret);
+  sceKernelDelayThread(100 * 1000);
+
+  /* Try to terminate network subsystems (ignore errors) */
+  ret = sceNetApctlTerm();
+  net_log("force_cleanup: apctl_term ret=0x%08X", (unsigned int)ret);
+  ret = sceNetInetTerm();
+  net_log("force_cleanup: inet_term ret=0x%08X", (unsigned int)ret);
+  ret = sceNetTerm();
+  net_log("force_cleanup: net_term ret=0x%08X", (unsigned int)ret);
+
+  /* Try to unload modules (ignore errors) */
+  ret = sceUtilityUnloadNetModule(PSP_NET_MODULE_INET);
+  net_log("force_cleanup: unload_inet ret=0x%08X", (unsigned int)ret);
+  ret = sceUtilityUnloadNetModule(PSP_NET_MODULE_COMMON);
+  net_log("force_cleanup: unload_common ret=0x%08X", (unsigned int)ret);
+
+  /* Give the system time to clean up */
+  sceKernelDelayThread(500 * 1000);
+
+  net_log("force_cleanup: done");
+}
+
+/**
  * Connect to desktop companion app
  */
 int network_connect(const PluginConfig *config) {
@@ -415,30 +448,54 @@ int network_show_profile_selector(void) {
 
 /**
  * Connect to WiFi access point
+ *
+ * This function handles network connection with care to not interfere with
+ * game connections. If the network is already connected or in the process
+ * of connecting (by the game), we reuse that connection instead of
+ * disconnecting and reconnecting.
  */
 static int connect_to_ap(void) {
   int ret;
-  int state;
+  int state = 0;
 
   net_log("connect_to_ap begin");
 
-  /* Check if already connected */
+  /* Check current network state */
   ret = sceNetApctlGetState(&state);
   net_log("connect_to_ap state ret=%d state=%d", ret, state);
-  if (ret == 0 && state == PSP_NET_APCTL_STATE_GOT_IP) {
-    return 0;
+
+  if (ret == 0) {
+    /* Already have an IP - fully connected, reuse this connection */
+    if (state == PSP_NET_APCTL_STATE_GOT_IP) {
+      net_log("connect_to_ap: already connected, reusing");
+      return 0;
+    }
+
+    /* Network state > 0 means the game is connecting or connected
+     * States: 0=disconnected, 1=scanning, 2=joining, 3=getting IP, 4=got IP
+     * For states 1-3, let the game's connection attempt complete */
+    if (state > 0) {
+      net_log("connect_to_ap: game connecting (state=%d), waiting for it",
+              state);
+      return 0; /* Let wait_for_connection handle it */
+    }
   }
 
+  /* Only disconnect and reconnect if truly disconnected or in error state */
+  net_log("connect_to_ap: disconnected, initiating connection");
+
+  /* Ensure clean state before connecting */
   {
     int disc = sceNetApctlDisconnect();
     net_log("connect_to_ap pre-disconnect ret=0x%08X", (unsigned int)disc);
-    sceKernelDelayThread(300 * 1000);
+    sceKernelDelayThread(500 * 1000);
   }
 
-  /* Try to connect to first available connection */
+  /* Try to connect to configured profile */
   ret = sceNetApctlConnect(g_profile_id);
   net_log("connect_to_ap connect ret=0x%08X profile=%d", (unsigned int)ret,
           g_profile_id);
+
   if (ret < 0) {
     return ret;
   }
@@ -451,7 +508,7 @@ static int connect_to_ap(void) {
  */
 static int wait_for_connection(int timeout_seconds) {
   int state = PSP_NET_APCTL_STATE_DISCONNECTED;
-  int timeout = timeout_seconds * 10; /* 100ms intervals */
+  int timeout = timeout_seconds * 4; /* 300ms intervals */
   int last_state = -1;
 
   net_log("wait_for_connection timeout=%d", timeout_seconds);
@@ -470,7 +527,7 @@ static int wait_for_connection(int timeout_seconds) {
       return 0;
     }
 
-    sceKernelDelayThread(100 * 1000); /* 100ms */
+    sceKernelDelayThread(300 * 1000);
     timeout--;
   }
 
@@ -479,6 +536,7 @@ static int wait_for_connection(int timeout_seconds) {
     int disc = sceNetApctlDisconnect();
     net_log("wait_for_connection disconnect ret=0x%08X", (unsigned int)disc);
   }
+
   return -1; /* Timeout */
 }
 

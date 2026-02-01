@@ -69,7 +69,8 @@ impl DiscordManager {
     }
     
     /// Update presence with game info
-    pub async fn update_presence(&mut self, game_info: &GameInfo) -> Result<()> {
+    /// If thumbnail_url is provided, it will be used as the large image
+    pub async fn update_presence(&mut self, game_info: &GameInfo, thumbnail_url: Option<&str>) -> Result<()> {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| anyhow::anyhow!("Not connected to Discord"))?;
         
@@ -110,13 +111,25 @@ impl DiscordManager {
             }
         }
         
-        // Add assets
-        let large_image_key = format!("game_{}", game_info.game_id.to_lowercase());
+        // Add assets - use thumbnail URL if provided, XMB image for XMB, otherwise fall back to static asset
+        const XMB_IMAGE_URL: &str = "https://qberty.com/xmb.png";
+        
+        let (large_image, large_text): (&str, &str) = if game_info.state == PspState::Xmb {
+            // Browsing XMB - use XMB screenshot
+            (XMB_IMAGE_URL, "XrossMediaBar")
+        } else if let Some(url) = thumbnail_url {
+            // Playing a game with a matched thumbnail
+            (url, game_info.title.as_str())
+        } else {
+            // Fallback to PSP logo
+            ("psp_logo", "PlayStation Portable")
+        };
+        
         let assets = activity::Assets::new()
-            .large_image("psp_logo")
-            .large_text("PlayStation Portable")
-            .small_image(&large_image_key)
-            .small_text(&game_info.title);
+            .large_image(large_image)
+            .large_text(large_text)
+            .small_image("psp_logo")
+            .small_text("PlayStation Portable");
         
         activity_builder = activity_builder.assets(assets);
         
@@ -152,14 +165,18 @@ impl DiscordManager {
         let mut guard = self.client.lock().await;
         let client = guard.as_mut().ok_or_else(|| anyhow::anyhow!("Not connected to Discord"))?;
         
+        const XMB_IMAGE_URL: &str = "https://qberty.com/xmb.png";
+        
         let state_text = format!("on {}", psp_name);
         let activity = activity::Activity::new()
             .details("Browsing XMB")
             .state(&state_text)
             .assets(
                 activity::Assets::new()
-                    .large_image("psp_logo")
-                    .large_text("PlayStation Portable")
+                    .large_image(XMB_IMAGE_URL)
+                    .large_text("XrossMediaBar")
+                    .small_image("psp_logo")
+                    .small_text("PlayStation Portable")
             );
         
         match client.set_activity(activity) {
