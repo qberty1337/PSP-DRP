@@ -70,9 +70,7 @@ async fn main() -> Result<()> {
             loop {
                 let state = tui_state.read().await;
                 tui.draw(&state)?;
-                drop(state);
-                
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                     return Ok(());
                 }
             }
@@ -89,9 +87,7 @@ async fn main() -> Result<()> {
         loop {
             let state = tui_state.read().await;
             tui.draw(&state)?;
-            drop(state);
-            
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                 return Ok(());
             }
         }
@@ -176,9 +172,7 @@ async fn main() -> Result<()> {
         loop {
             let state = tui_state.read().await;
             tui.draw(&state)?;
-            drop(state);
-            
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), &state)? {
                 return Ok(());
             }
         }
@@ -222,11 +216,9 @@ async fn main() -> Result<()> {
 
             // Refresh TUI
             _ = refresh_interval.tick() => {
-                // Get current view mode
-                let current_view_mode = tui_state.read().await.view_mode;
-                
-                // Handle input
-                match tui.handle_events(Duration::from_millis(INPUT_POLL_MS), current_view_mode)? {
+                // Handle input (pass the state for mouse click detection)
+                let state_for_events = tui_state.read().await.clone();
+                match tui.handle_events(Duration::from_millis(INPUT_POLL_MS), &state_for_events)? {
                     Some(TuiEvent::Quit) => break,
                     Some(TuiEvent::ShowStats) => {
                         // Load all game stats and play dates, then switch to stats view
@@ -245,10 +237,16 @@ async fn main() -> Result<()> {
                         state.play_dates = play_dates;
                         state.view_mode = ViewMode::Stats;
                         state.stats_scroll = 0;
+                        state.selected_date = None;
                     }
                     Some(TuiEvent::HideStats) => {
                         let mut state = tui_state.write().await;
                         state.view_mode = ViewMode::Main;
+                        state.selected_date = None;
+                    }
+                    Some(TuiEvent::SelectDate(date)) => {
+                        let mut state = tui_state.write().await;
+                        state.selected_date = date;
                     }
                     None => {}
                 }
@@ -322,10 +320,10 @@ async fn connect_discord_with_ui(
             // Wait with TUI responsiveness
             for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10), ViewMode::Main)? {
+                let state = tui_state.read().await;
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10), &state)? {
                     return Err(anyhow::anyhow!("User quit during Discord connection"));
                 }
-                let state = tui_state.read().await;
                 tui.draw(&state)?;
             }
         }

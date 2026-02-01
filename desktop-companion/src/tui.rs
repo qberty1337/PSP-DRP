@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, MouseEvent, MouseEventKind, MouseButton, EnableMouseCapture, DisableMouseCapture},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -36,6 +36,8 @@ pub enum TuiEvent {
     ShowStats,
     /// User wants to hide stats
     HideStats,
+    /// User selected a date in the calendar (or None to clear selection)
+    SelectDate(Option<String>),
 }
 
 /// Which view is currently active
@@ -90,6 +92,8 @@ pub struct TuiState {
     pub stats_scroll: usize,
     /// All dates when games were played, mapping date (YYYY-MM-DD) to game titles
     pub play_dates: std::collections::HashMap<String, Vec<String>>,
+    /// Currently selected date in calendar (YYYY-MM-DD format), None means show all-time stats
+    pub selected_date: Option<String>,
 }
 
 /// A log entry with timestamp and content
@@ -177,7 +181,7 @@ impl Tui {
     pub fn new() -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen)?;
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
         Ok(Self { terminal })
@@ -186,7 +190,7 @@ impl Tui {
     /// Restore terminal to normal mode
     pub fn restore(&mut self) -> io::Result<()> {
         disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        execute!(self.terminal.backend_mut(), DisableMouseCapture, LeaveAlternateScreen)?;
         self.terminal.show_cursor()?;
         Ok(())
     }
@@ -199,36 +203,214 @@ impl Tui {
         Ok(())
     }
 
-    /// Handle keyboard events
-    pub fn handle_events(&mut self, timeout: Duration, view_mode: ViewMode) -> io::Result<Option<TuiEvent>> {
+    /// Handle keyboard and mouse events
+    pub fn handle_events(&mut self, timeout: Duration, state: &TuiState) -> io::Result<Option<TuiEvent>> {
         if event::poll(timeout)? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('Q') => {
-                            return Ok(Some(TuiEvent::Quit));
-                        }
-                        KeyCode::Esc => {
-                            // Esc quits from main view, goes back from stats view
-                            if view_mode == ViewMode::Stats {
-                                return Ok(Some(TuiEvent::HideStats));
-                            } else {
+            match event::read()? {
+                Event::Key(key) => {
+                    if key.kind == KeyEventKind::Press {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') => {
                                 return Ok(Some(TuiEvent::Quit));
                             }
-                        }
-                        KeyCode::Char('s') | KeyCode::Char('S') => {
-                            if view_mode == ViewMode::Main {
-                                return Ok(Some(TuiEvent::ShowStats));
-                            } else {
-                                return Ok(Some(TuiEvent::HideStats));
+                            KeyCode::Esc => {
+                                // Esc quits from main view, goes back from stats view
+                                if state.view_mode == ViewMode::Stats {
+                                    return Ok(Some(TuiEvent::HideStats));
+                                } else {
+                                    return Ok(Some(TuiEvent::Quit));
+                                }
                             }
+                            KeyCode::Char('s') | KeyCode::Char('S') => {
+                                if state.view_mode == ViewMode::Main {
+                                    return Ok(Some(TuiEvent::ShowStats));
+                                } else {
+                                    return Ok(Some(TuiEvent::HideStats));
+                                }
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
+                Event::Mouse(mouse) => {
+                    // Only handle clicks in stats view
+                    if state.view_mode == ViewMode::Stats {
+                        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                            // Check if click is in calendar area
+                            let size = self.terminal.size()?;
+                            let term_rect = Rect::new(0, 0, size.width, size.height);
+                            if let Some(clicked_date) = Self::get_clicked_date(mouse, term_rect) {
+                                // If clicking same date, deselect; otherwise select
+                                if state.selected_date.as_ref() == Some(&clicked_date) {
+                                    return Ok(Some(TuiEvent::SelectDate(None)));
+                                } else {
+                                    return Ok(Some(TuiEvent::SelectDate(Some(clicked_date))));
+                                }
+                            } else {
+                                // Clicked outside calendar - clear selection
+                                if state.selected_date.is_some() {
+                                    return Ok(Some(TuiEvent::SelectDate(None)));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
         Ok(None)
+    }
+    
+    /// Calculate which calendar date was clicked, if any
+    /// Uses the same Layout calculations as render_stats_view for exact position matching
+    fn get_clicked_date(mouse: MouseEvent, term_size: Rect) -> Option<String> {
+        use ratatui::layout::{Layout, Direction, Constraint};
+        use ratatui::widgets::Block;
+        
+        // Recreate the exact layout from render_stats_view
+        let frame_area = term_size;
+        
+        // Outer block - same as render_stats_view
+        let outer_block = Block::default()
+            .borders(ratatui::widgets::Borders::ALL);
+        let inner_area = outer_block.inner(frame_area);
+        
+        // Main vertical layout - same constraints as render_stats_view
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),   // Header/Title
+                Constraint::Length(10),  // Visualization (bar graph + calendar)
+                Constraint::Min(6),      // Stats list
+                Constraint::Length(1),   // Footer
+            ])
+            .split(inner_area);
+        
+        let viz_area = main_chunks[1];
+        
+        // Visualization horizontal layout - same constraints as render_stats_visualization
+        let viz_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(55),  // Bar graph
+                Constraint::Percentage(45),  // Calendar
+            ])
+            .split(viz_area);
+        
+        let calendar_area = viz_chunks[1];
+        
+        // Calendar inner area (accounting for border)
+        let calendar_block = Block::default()
+            .borders(ratatui::widgets::Borders::ALL);
+        let calendar_inner = calendar_block.inner(calendar_area);
+        
+        // Check if click is within calendar inner bounds
+        let x = mouse.column;
+        let y = mouse.row;
+        
+        if x < calendar_inner.x || x >= calendar_inner.x + calendar_inner.width ||
+           y < calendar_inner.y || y >= calendar_inner.y + calendar_inner.height {
+            return None;
+        }
+        
+        // Calculate relative position within calendar inner area
+        let rel_x = (x - calendar_inner.x) as usize;
+        let rel_y = (y - calendar_inner.y) as usize;
+        
+        // Skip header row (month names) and day-of-week row  
+        if rel_y < 2 {
+            return None;
+        }
+        let week = rel_y - 2;
+        if week >= 6 {
+            return None;
+        }
+        
+        // Calculate how many months are displayed based on width (same as render_calendar)
+        let month_width = 21usize;
+        let spacing = 2usize;
+        let available_width = calendar_inner.width as usize;
+        let max_months = ((available_width + spacing) / (month_width + spacing)).max(1).min(12);
+        
+        if max_months == 0 {
+            return None;
+        }
+        
+        // Generate month data (same as render_calendar)
+        let now = chrono::Local::now();
+        let current_year = now.year();
+        let current_month = now.month();
+        
+        let months: Vec<(i32, u32)> = (0..max_months as u32).rev().map(|months_ago| {
+            subtract_months(current_year, current_month, months_ago)
+        }).collect();
+        
+        // Calculate centering (same as render_calendar uses Alignment::Center for Paragraph)
+        let total_content_width = max_months * month_width + (max_months.saturating_sub(1)) * spacing;
+        let left_padding = if available_width > total_content_width {
+            (available_width - total_content_width) / 2
+        } else {
+            0
+        };
+        
+        // Adjust for centering
+        if rel_x < left_padding {
+            return None;
+        }
+        let adjusted_x = rel_x - left_padding;
+        
+        // Check if past the content area
+        if adjusted_x >= total_content_width {
+            return None;
+        }
+        
+        // Find which month column
+        let mut month_idx = 0;
+        let mut found = false;
+        let mut col_start = 0;
+        for i in 0..max_months {
+            let col_end = col_start + month_width;
+            if adjusted_x >= col_start && adjusted_x < col_end {
+                month_idx = i;
+                found = true;
+                break;
+            }
+            col_start = col_end + spacing;
+        }
+        
+        if !found {
+            return None;
+        }
+        
+        // Check if in spacing between months
+        let month_start = month_idx * (month_width + spacing);
+        let month_end = month_start + month_width;
+        if adjusted_x >= month_end {
+            return None;
+        }
+        
+        // Calculate weekday (0-6) from x position within the month
+        let within_month_x = adjusted_x - month_start;
+        let weekday = within_month_x / 3;
+        if weekday >= 7 {
+            return None;
+        }
+        
+        // Get the month info
+        let (year, month) = months.get(month_idx)?;
+        
+        // Calculate the day number
+        let first_day = chrono::NaiveDate::from_ymd_opt(*year, *month, 1)?;
+        let days_in_month = get_days_in_month(*year, *month);
+        let first_weekday = first_day.weekday().num_days_from_monday() as i32;
+        
+        let day_num = week as i32 * 7 + weekday as i32 - first_weekday + 1;
+        
+        if day_num >= 1 && day_num <= days_in_month as i32 {
+            Some(format!("{:04}-{:02}-{:02}", year, month, day_num))
+        } else {
+            None
+        }
     }
 }
 
@@ -749,8 +931,21 @@ fn render_stats_visualization(frame: &mut Frame, area: Rect, state: &TuiState) {
 
 /// Render horizontal bar graph of top games
 fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
+    // Determine title based on whether a date is selected
+    let title = if let Some(ref date) = state.selected_date {
+        // Format date as short date (e.g., "Feb 1")
+        if let Some(parsed) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok() {
+            let month = get_short_month_name(parsed.month());
+            format!(" Games on {} {} ", month, parsed.day())
+        } else {
+            " Top Games ".to_string()
+        }
+    } else {
+        " Top Games ".to_string()
+    };
+    
     let block = Block::default()
-        .title(Span::styled(" Top Games ", Style::default().fg(Color::Yellow).bold()))
+        .title(Span::styled(title, Style::default().fg(Color::Yellow).bold()))
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(50, 50, 70)))
@@ -759,10 +954,28 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if state.all_game_stats.is_empty() {
-        let empty_msg = Paragraph::new(Span::styled("No data", Style::default().fg(Color::DarkGray).italic()))
-            .alignment(Alignment::Center);
-        frame.render_widget(empty_msg, inner);
+    // Filter games based on selected date
+    let games_to_show: Vec<&GameStats> = if let Some(ref date) = state.selected_date {
+        // Get games played on the selected date
+        if let Some(game_titles) = state.play_dates.get(date) {
+            state.all_game_stats.iter()
+                .filter(|g| game_titles.contains(&g.title))
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        // Show all games
+        state.all_game_stats.iter().collect()
+    };
+
+    if games_to_show.is_empty() {
+        let empty_msg = if state.selected_date.is_some() {
+            Paragraph::new(Span::styled("No games played", Style::default().fg(Color::DarkGray).italic()))
+        } else {
+            Paragraph::new(Span::styled("No data", Style::default().fg(Color::DarkGray).italic()))
+        };
+        frame.render_widget(empty_msg.alignment(Alignment::Center), inner);
         return;
     }
 
@@ -772,8 +985,8 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
     // Calculate bar width based on available space (reserve space for title + time + spacing)
     let bar_area_width = inner.width.saturating_sub(title_width as u16 + 8) as usize;
 
-    // Get max playtime for scaling
-    let max_seconds = state.all_game_stats.iter()
+    // Get max playtime for scaling (from the filtered games)
+    let max_seconds = games_to_show.iter()
         .map(|g| g.total_seconds)
         .max()
         .unwrap_or(1)
@@ -787,11 +1000,16 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
         Color::Green,
         Color::Blue,
     ];
-
-    let lines: Vec<Line> = state.all_game_stats.iter()
-        .take(inner.height as usize)
+    
+    // Build a color map based on all_game_stats order (to keep colors consistent)
+    let game_color_map: std::collections::HashMap<&str, usize> = state.all_game_stats.iter()
         .enumerate()
-        .map(|(i, game)| {
+        .map(|(i, g)| (g.title.as_str(), i))
+        .collect();
+
+    let lines: Vec<Line> = games_to_show.iter()
+        .take(inner.height as usize)
+        .map(|game| {
             // Truncate title with ellipsis
             let title = if game.title.chars().count() > title_width {
                 let truncated: String = game.title.chars().take(title_width - 3).collect();
@@ -810,7 +1028,9 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
             // Format time
             let time = format_duration_short(game.total_seconds);
 
-            let color = bar_colors[i % bar_colors.len()];
+            // Use color based on position in all_game_stats (consistent coloring)
+            let color_idx = game_color_map.get(game.title.as_str()).copied().unwrap_or(0);
+            let color = bar_colors[color_idx % bar_colors.len()];
             
             Line::from(vec![
                 Span::styled(title, Style::default().fg(Color::White)),
