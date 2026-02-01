@@ -30,9 +30,6 @@ typedef struct {
   /* Enable auto-discovery */
   int auto_discovery;
 
-  /* When to be active: 0=game only, 1=always */
-  int always_active;
-
   /* Send game icons */
   int send_icons;
 
@@ -57,7 +54,8 @@ typedef struct {
   /* Enable logging to memory stick */
   int enable_logging;
 
-  /* Vblank wait count before network init (default: 300 = ~5 seconds at 60fps) */
+  /* Vblank wait count before network init (default: 300 = ~5 seconds at 60fps)
+   */
   uint32_t vblank_wait;
 } PluginConfig;
 

@@ -200,10 +200,10 @@ static int plugin_thread(SceSize args, void *argp) {
   /* Set logging flag from config */
   g_logging_enabled = g_config.enable_logging;
 
-  net_log("Config: enabled=%d ip=%s port=%d auto=%d always=%d icons=%d "
+  net_log("Config: enabled=%d ip=%s port=%d auto=%d icons=%d "
           "poll_ms=%lu hb_ms=%lu update_ms=%lu timeout_s=%lu send_once=%d",
           g_config.enabled, g_config.desktop_ip, g_config.port,
-          g_config.auto_discovery, g_config.always_active, g_config.send_icons,
+          g_config.auto_discovery, g_config.send_icons,
           (unsigned long)g_config.poll_interval_ms,
           (unsigned long)g_config.heartbeat_interval_ms,
           (unsigned long)g_config.game_update_interval_ms,
@@ -230,11 +230,13 @@ static int plugin_thread(SceSize args, void *argp) {
 
       /* Check if this game is completely incompatible */
       if (is_incompatible_game(early_game_id)) {
-        net_log("Game %s is incompatible, exiting plugin thread", early_game_id);
+        net_log("Game %s is incompatible, exiting plugin thread",
+                early_game_id);
         return 0;
       }
 
-      /* Check for per-game vblank override (e.g., NPUH10117_vblank_wait = 600) */
+      /* Check for per-game vblank override (e.g., NPUH10117_vblank_wait = 600)
+       */
       game_vblank = config_get_game_vblank_wait(early_game_id);
       if (game_vblank >= 0) {
         vblank_count = game_vblank;
@@ -247,8 +249,8 @@ static int plugin_thread(SceSize args, void *argp) {
 
     /*
      * Wait before network init.
-     * Some games (PQ) conflict with sceDisplayWaitVblankStart, so use passive sleep.
-     * Most games work fine with vblank wait.
+     * Some games (PQ) conflict with sceDisplayWaitVblankStart, so use passive
+     * sleep. Most games work fine with vblank wait.
      */
     if (should_skip_vblank(early_game_id)) {
       /* PQ and similar: use passive sleep instead of vblank wait */
@@ -257,7 +259,8 @@ static int plugin_thread(SceSize args, void *argp) {
       sceKernelDelayThread(delay_ms * 1000);
     } else {
       /* Normal games: use vblank wait */
-      net_log("DEBUG: vblank_wait=%d (~%d seconds)", vblank_count, vblank_count / 60);
+      net_log("DEBUG: vblank_wait=%d (~%d seconds)", vblank_count,
+              vblank_count / 60);
       wait_for_vblanks(vblank_count);
     }
     net_log("DEBUG: Wait finished");

@@ -1,6 +1,5 @@
-; PSP DRP Configuration
-; Edit this file to customize the plugin's behavior
-; Rename to psp_drp.ini and place in ms0:/SEPLUGINS/pspdrp/
+; PSP Discord Rich Presence Configuration
+; Edit this file to customize the plugin behavior
 
 ; Enable or disable the plugin (1 = enabled, 0 = disabled)
 enabled = 1
@@ -15,16 +14,20 @@ port = 9276
 ; Enable auto-discovery of desktop app (1 = enabled, 0 = disabled)
 auto_discovery = 1
 
-; When to show presence:
-; 0 = only when playing games
-; 1 = always (including XMB)
-always_active = 0
+; Send once mode (1 = enabled, 0 = disabled)
+; When enabled, sends one update on plugin load then unloads network
+send_once = 0
 
 ; Send game icons to desktop app (1 = enabled, 0 = disabled)
 send_icons = 1
 
 ; Custom name for this PSP (shown in Discord)
 psp_name = PSP
+
+; Enable logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)
+enable_logging = 0
+
+; === Advanced Settings ===
 
 ; Game polling interval in milliseconds (default: 5000)
 poll_interval_ms = 5000
@@ -36,27 +39,20 @@ heartbeat_interval_ms = 30000
 ; Set to 0 to only send on change
 game_update_interval_ms = 60000
 
-; Timeout in seconds to wait until deactivating the plugin by default (0 = disable)
+; Connect timeout in seconds (0 = disable, default: 30)
 connect_timeout_s = 30
 
-; Send once mode (1 = enabled, 0 = disabled)
-; When enabled, sends one update on plugin load then safely unloads network
-send_once = 0
+; Vblank wait before network init (default: 300 = ~5 seconds)
+; Each vblank is ~16.67ms at 60fps. Increase if game crashes.
+; Recommended values: 300 (5s), 600 (10s for sensitive games)
+vblank_wait = 300
 
-; Enable debug logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)
-; Keep disabled for normal use to avoid memory stick writes
-enable_logging = 0
+; === Per-Game Vblank Overrides ===
+; Use GAMEID_vblank_wait = VALUE to override for specific games
+; Examples:
+; NPUH10117_vblank_wait = 600  ; Corpse Party - needs ~10 seconds
+; ULUS10213_vblank_wait = 600  ; The Warriors - needs ~10 seconds, doesnt freeze, but can't capture network
+; ULUS10041_vblank_wait = 300  ; WipEout Pulse - default is fine
+; ULUS10240_vblank_wait = 800 ; Prince of Persia: Rival Swords - freezes no matter what?
 
-; Holding this button down while the plugin loads will prevent the plugin from loading
-; Supported keys = L, R, SELECT, START, UP, DOWN, LEFT, RIGHT, TRIANGLE, CIRCLE, CROSS, SQUARE
-skip_button = L
-
-; Startup delay in milliseconds before loading net module (default: 0)
-; - For fastest start (beat games to network): use 0
-; - For games that crash on early load: use higher values (1000-10000)
-; If network init fails repeatedly, the plugin will add a game-specific entry
-; like "UCUS98712_startup_delay_ms =" for you to fill in.
-startup_delay_ms = 5000
-
-; Per-game startup delay examples (add values after = to enable):
-; NPUH10117_startup_delay_ms = 10000  ; Corpse Party - needs delay to avoid crash
+NPUH10117_vblank_wait = 600

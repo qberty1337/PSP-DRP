@@ -27,7 +27,6 @@ void config_set_defaults(PluginConfig *config) {
   config->desktop_ip[0] = '\0'; /* Empty = use discovery */
   config->port = DEFAULT_PORT;
   config->auto_discovery = 1;
-  config->always_active = 0;
   config->send_icons = 1;
   strcpy(config->psp_name, "PSP");
   config->poll_interval_ms = 5000;
@@ -123,11 +122,6 @@ int config_save(const PluginConfig *config) {
       "; Enable auto-discovery of desktop app (1 = enabled, 0 = disabled)\n"
       "auto_discovery = %d\n"
       "\n"
-      "; When to show presence:\n"
-      "; 0 = only when playing games\n"
-      "; 1 = always (including XMB, videos, music)\n"
-      "always_active = %d\n"
-      "\n"
       "; Send game icons to desktop app (1 = enabled, 0 = disabled)\n"
       "send_icons = %d\n"
       "\n"
@@ -161,9 +155,8 @@ int config_save(const PluginConfig *config) {
       "; When enabled, sends one update on plugin load then unloads network\n"
       "send_once = %d\n",
       config->enabled, config->desktop_ip, config->port, config->auto_discovery,
-      config->always_active, config->send_icons, config->psp_name,
-      (unsigned long)config->vblank_wait, config->enable_logging,
-      (unsigned long)config->poll_interval_ms,
+      config->send_icons, config->psp_name, (unsigned long)config->vblank_wait,
+      config->enable_logging, (unsigned long)config->poll_interval_ms,
       (unsigned long)config->heartbeat_interval_ms,
       (unsigned long)config->game_update_interval_ms,
       (unsigned long)config->connect_timeout_s, config->send_once);
@@ -224,8 +217,6 @@ static void parse_line(const char *line, PluginConfig *config) {
     }
   } else if (strcmp(key, "auto_discovery") == 0) {
     config->auto_discovery = parse_bool(value);
-  } else if (strcmp(key, "always_active") == 0) {
-    config->always_active = parse_bool(value);
   } else if (strcmp(key, "send_icons") == 0) {
     config->send_icons = parse_bool(value);
   } else if (strcmp(key, "psp_name") == 0) {
