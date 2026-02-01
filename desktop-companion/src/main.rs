@@ -25,7 +25,7 @@ use config::Config;
 use discord::DiscordManager;
 use server::{Server, ServerCommand, ServerEvent};
 use thumbnail_matcher::ThumbnailMatcher;
-use tui::{Tui, TuiEvent, TuiState};
+use tui::{GameStats, Tui, TuiEvent, TuiState, ViewMode};
 use usage_tracker::UsageTracker;
 
 /// Application refresh rate (10 Hz)
@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
                 tui.draw(&state)?;
                 drop(state);
                 
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
                     return Ok(());
                 }
             }
@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
             tui.draw(&state)?;
             drop(state);
             
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
                 return Ok(());
             }
         }
@@ -178,7 +178,7 @@ async fn main() -> Result<()> {
             tui.draw(&state)?;
             drop(state);
             
-            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100))? {
+            if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(100), ViewMode::Main)? {
                 return Ok(());
             }
         }
@@ -222,9 +222,35 @@ async fn main() -> Result<()> {
 
             // Refresh TUI
             _ = refresh_interval.tick() => {
+                // Get current view mode
+                let current_view_mode = tui_state.read().await.view_mode;
+                
                 // Handle input
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(INPUT_POLL_MS))? {
-                    break;
+                match tui.handle_events(Duration::from_millis(INPUT_POLL_MS), current_view_mode)? {
+                    Some(TuiEvent::Quit) => break,
+                    Some(TuiEvent::ShowStats) => {
+                        // Load all game stats and play dates, then switch to stats view
+                        let all_stats = usage_tracker.get_all_game_stats();
+                        let play_dates = usage_tracker.get_all_play_dates();
+                        let mut state = tui_state.write().await;
+                        state.all_game_stats = all_stats.into_iter()
+                            .map(|(title, game_id, seconds, sessions, last_played)| GameStats {
+                                title,
+                                game_id,
+                                total_seconds: seconds,
+                                session_count: sessions,
+                                last_played,
+                            })
+                            .collect();
+                        state.play_dates = play_dates;
+                        state.view_mode = ViewMode::Stats;
+                        state.stats_scroll = 0;
+                    }
+                    Some(TuiEvent::HideStats) => {
+                        let mut state = tui_state.write().await;
+                        state.view_mode = ViewMode::Main;
+                    }
+                    None => {}
                 }
 
                 // Try Discord reconnection if needed
@@ -296,7 +322,7 @@ async fn connect_discord_with_ui(
             // Wait with TUI responsiveness
             for _ in 0..50 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10))? {
+                if let Some(TuiEvent::Quit) = tui.handle_events(Duration::from_millis(10), ViewMode::Main)? {
                     return Err(anyhow::anyhow!("User quit during Discord connection"));
                 }
                 let state = tui_state.read().await;
