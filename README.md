@@ -200,7 +200,7 @@ If a more consistent way to use the network stack is found, I'll update the plug
 - Try disabling other plugins temporarily
 
 ## Notes
-From my testing using on a PSP 1000 with ARK-4, keeping the WiFi on and periodically sending updates to the companion app did not have a considerably different impact on battery life versus periodically powering on the entire wifi stack every time. The difference was negligible (though I am using an aftermarket battery cell).
+From my testing using a PSP 1000 with ARK-4, keeping the WiFi on and periodically sending updates to the companion app did not have a considerably different impact on battery life versus periodically powering on the entire wifi stack every time. The difference was negligible (though I am using an aftermarket battery cell).
 
 Unfortunately for a lot of PSP games, they takeover the net stack and this plugin either doesn't get the chance to grab it, or tries to grab it when it can't be unloaded by the game so it crashes either the game or the PSP. I've tried to mitigate this by adding a vblank wait before grabbing the network, but it's not a perfect solution. I'd be open to more consistent or robust ways to handle this.
 
