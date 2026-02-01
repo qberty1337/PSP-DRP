@@ -44,9 +44,6 @@ static SceUInt64 g_start_time = 0;
 /* Selected profile ID */
 static int g_profile_id = 1;
 
-/* Saved thread priority (restored after WiFi connection) */
-static int g_saved_priority = 0x11;
-
 /* Forward declarations */
 static int connect_to_ap(void);
 static int wait_for_connection(int timeout_seconds);
@@ -240,8 +237,8 @@ void network_force_cleanup(void) {
 int network_connect(const PluginConfig *config) {
   int ret;
 
-  net_log("network_connect begin ip=%s port=%d auto=%d",
-          config->desktop_ip, config->port, config->auto_discovery);
+  net_log("network_connect begin ip=%s port=%d auto=%d", config->desktop_ip,
+          config->port, config->auto_discovery);
 
   /* Connect to WiFi access point */
   ret = connect_to_ap();
@@ -460,8 +457,6 @@ int network_show_profile_selector(void) {
 static int connect_to_ap(void) {
   int ret;
   int state = 0;
-  SceUID thid;
-  int old_priority;
 
   net_log("connect_to_ap begin");
 
@@ -489,30 +484,10 @@ static int connect_to_ap(void) {
   /* Only disconnect and reconnect if truly disconnected or in error state */
   net_log("connect_to_ap: disconnected, initiating connection");
 
-  /*
-   * SOLUTION 1: Lower thread priority during WiFi connection.
-   * This allows the game's I/O threads to run without being starved
-   * by our network operations. Priority 0x50 is very low (background).
-   */
-  thid = sceKernelGetThreadId();
-  old_priority = sceKernelGetThreadCurrentPriority();
-  net_log("Lowering thread priority from 0x%02X to 0x50", old_priority);
-  sceKernelChangeThreadPriority(thid, 0x50);
-  g_saved_priority = old_priority;
-
-  /*
-   * SOLUTION 2: Disable WLAN power save mode.
-   * Power save mode causes the WiFi chip to periodically sleep,
-   * creating interrupt conflicts with UMD/Memory Stick I/O.
-   * Note: sceNetApctlInit with buffer size 0x8000 should already
-   * have power save disabled. We also use longer delays below.
-   */
-
   /* Ensure clean state before connecting */
   {
     int disc = sceNetApctlDisconnect();
     net_log("connect_to_ap pre-disconnect ret=0x%08X", (unsigned int)disc);
-    /* Longer delay at low priority to let game I/O settle */
     sceKernelDelayThread(500 * 1000);
   }
 
@@ -522,39 +497,24 @@ static int connect_to_ap(void) {
           g_profile_id);
 
   if (ret < 0) {
-    /* Restore priority on error */
-    sceKernelChangeThreadPriority(thid, old_priority);
-    net_log("Restored thread priority to 0x%02X (connect failed)", old_priority);
-    g_saved_priority = 0;
     return ret;
   }
 
-  /* Note: Priority remains low during wait_for_connection.
-   * It will be restored after connection is fully established. */
   return 0;
 }
 
 /**
  * Wait for network connection
- * Uses longer delays (300ms) at low thread priority to minimize
- * contention with game I/O during the critical joining phase.
  */
 static int wait_for_connection(int timeout_seconds) {
   int state = PSP_NET_APCTL_STATE_DISCONNECTED;
-  int timeout = timeout_seconds * 4; /* 300ms intervals (was 100ms) */
+  int timeout = timeout_seconds * 4; /* 300ms intervals */
   int last_state = -1;
-  SceUID thid = sceKernelGetThreadId();
 
-  net_log("wait_for_connection timeout=%d (low priority mode)", timeout_seconds);
+  net_log("wait_for_connection timeout=%d", timeout_seconds);
 
   while (timeout > 0) {
     if (sceNetApctlGetState(&state) < 0) {
-      /* Restore priority on error */
-      if (g_saved_priority > 0) {
-        sceKernelChangeThreadPriority(thid, g_saved_priority);
-        net_log("Restored thread priority to 0x%02X (getstate failed)", g_saved_priority);
-        g_saved_priority = 0;
-      }
       return -1;
     }
 
@@ -564,16 +524,9 @@ static int wait_for_connection(int timeout_seconds) {
     }
 
     if (state == PSP_NET_APCTL_STATE_GOT_IP) {
-      /* Connection successful - restore thread priority */
-      if (g_saved_priority > 0) {
-        sceKernelChangeThreadPriority(thid, g_saved_priority);
-        net_log("Restored thread priority to 0x%02X (connected)", g_saved_priority);
-        g_saved_priority = 0;
-      }
       return 0;
     }
 
-    /* Longer delay (300ms) at low priority gives game more CPU time */
     sceKernelDelayThread(300 * 1000);
     timeout--;
   }
@@ -582,13 +535,6 @@ static int wait_for_connection(int timeout_seconds) {
   {
     int disc = sceNetApctlDisconnect();
     net_log("wait_for_connection disconnect ret=0x%08X", (unsigned int)disc);
-  }
-
-  /* Restore priority on timeout */
-  if (g_saved_priority > 0) {
-    sceKernelChangeThreadPriority(thid, g_saved_priority);
-    net_log("Restored thread priority to 0x%02X (timeout)", g_saved_priority);
-    g_saved_priority = 0;
   }
 
   return -1; /* Timeout */

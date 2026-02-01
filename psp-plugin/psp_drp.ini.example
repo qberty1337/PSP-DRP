@@ -27,6 +27,11 @@ psp_name = PSP
 ; Enable logging to ms0:/psp_drp.log (1 = enabled, 0 = disabled)
 enable_logging = 0
 
+; Skip button - hold during game/xmb boot to disable plugin for that session
+; Options: L, R, SELECT, START, UP, DOWN, LEFT, RIGHT, TRIANGLE, CIRCLE, CROSS, SQUARE
+; Press SELECT + skip_button during gameplay to reactivate (if game allows it)
+skip_button = L
+
 ; === Advanced Settings ===
 
 ; Game polling interval in milliseconds (default: 5000)
