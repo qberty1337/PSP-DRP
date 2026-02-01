@@ -825,7 +825,7 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
     frame.render_widget(paragraph, inner);
 }
 
-/// Render calendar heatmap showing past 3 months
+/// Render calendar heatmap showing past months (responsive to window width)
 fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
     let block = Block::default()
         .title(Span::styled(" Activity ", Style::default().fg(Color::Cyan).bold()))
@@ -841,13 +841,25 @@ fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
     let current_month = now.month();
     let current_day = now.day();
 
-    // Generate data for 3 months (2 months ago, last month, current)
-    let months: Vec<(i32, u32, bool)> = (0..3).rev().map(|months_ago| {
+    // Calculate how many months can fit
+    // Each month: 7 days * 3 chars = 21 chars
+    // Spacing between months: 2 chars
+    // Total for N months: N * 21 + (N-1) * 2 = N * 23 - 2
+    let month_width = 21u16;
+    let spacing = 2u16;
+    let available_width = inner.width;
+    
+    // Calculate max months that fit: N * 23 - 2 <= available_width => N <= (available_width + 2) / 23
+    let max_months = ((available_width + spacing) / (month_width + spacing)).max(1).min(12) as u32;
+    
+    // Generate data for calculated months (going back from current month)
+    let months: Vec<(i32, u32, bool)> = (0..max_months).rev().map(|months_ago| {
         let (y, m) = subtract_months(current_year, current_month, months_ago);
         let is_current = months_ago == 0;
         (y, m, is_current)
     }).collect();
 
+    let num_months = months.len();
     let mut lines: Vec<Line> = Vec::new();
     
     // Header row with month names (each month takes 21 chars: 7 days * 3 chars each)
@@ -857,15 +869,15 @@ fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
         // Center month name in 21 char width
         let header = format!("{} '{}", month_name, year % 100);
         header_spans.push(Span::styled(format!("{:^21}", header), Style::default().fg(Color::White).bold()));
-        if i < 2 {
-            header_spans.push(Span::styled(" ", Style::default()));
+        if i < num_months - 1 {
+            header_spans.push(Span::styled("  ", Style::default()));
         }
     }
     lines.push(Line::from(header_spans));
     
     // Day-of-week headers
     let mut dow_spans: Vec<Span> = Vec::new();
-    for i in 0..3 {
+    for i in 0..num_months {
         dow_spans.push(Span::styled("Mo ", Style::default().fg(Color::DarkGray)));
         dow_spans.push(Span::styled("Tu ", Style::default().fg(Color::DarkGray)));
         dow_spans.push(Span::styled("We ", Style::default().fg(Color::DarkGray)));
@@ -873,7 +885,7 @@ fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
         dow_spans.push(Span::styled("Fr ", Style::default().fg(Color::DarkGray)));
         dow_spans.push(Span::styled("Sa ", Style::default().fg(Color::DarkGray)));
         dow_spans.push(Span::styled("Su", Style::default().fg(Color::DarkGray)));
-        if i < 2 {
+        if i < num_months - 1 {
             dow_spans.push(Span::styled("  ", Style::default()));
         }
     }
@@ -952,7 +964,7 @@ fn render_calendar(frame: &mut Frame, area: Rect, state: &TuiState) {
             }
             
             // Spacing between months
-            if month_idx < 2 {
+            if month_idx < num_months - 1 {
                 row_spans.push(Span::styled("  ", Style::default()));
             }
         }
