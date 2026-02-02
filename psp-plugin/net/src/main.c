@@ -19,6 +19,7 @@
 #include "discord_rpc.h"
 #include "game_detect.h"
 #include "network.h"
+#include "usage_tracker.h"
 
 /**
  * Games that CANNOT use vblank wait (display system conflicts).
@@ -211,6 +212,68 @@ static int plugin_thread(SceSize args, void *argp) {
 
   if (!g_config.enabled) {
     net_log("Plugin disabled in config");
+    return 0;
+  }
+
+  /* Offline mode: track usage locally, no network */
+  if (g_config.offline_mode) {
+    net_log("=== OFFLINE MODE ===");
+    game_detect_init();
+    usage_init();
+
+    /* Initial game detection */
+    if (game_detect_current(&new_game) == 0 && new_game.game_id[0] != '\0') {
+      memcpy(&g_current_game, &new_game, sizeof(GameInfo));
+      /* Rename XMB module to friendly name */
+      if (strncmp(g_current_game.game_id, "Xmb", 3) == 0 ||
+          strcmp(g_current_game.game_id, "XMB") == 0) {
+        strcpy(g_current_game.game_id, "XMB");
+        strcpy(g_current_game.title, "Browsing XMB");
+      }
+      usage_start_session(g_current_game.game_id, g_current_game.title);
+      net_log("Started tracking: %s", g_current_game.title);
+    }
+
+    /* Main loop - just track game changes */
+    while (g_running) {
+      SceUInt64 poll_interval = (SceUInt64)g_config.poll_interval_ms * 1000;
+      if (poll_interval < 500000)
+        poll_interval = 500000;
+
+      now = get_time_us();
+      if (now - g_last_game_check >= poll_interval) {
+        g_last_game_check = now;
+        if (game_detect_current(&new_game) == 0) {
+          /* Rename XMB module to friendly name BEFORE comparison */
+          if (strncmp(new_game.game_id, "Xmb", 3) == 0 ||
+              strcmp(new_game.game_id, "XMB") == 0) {
+            strcpy(new_game.game_id, "XMB");
+            strcpy(new_game.title, "Browsing XMB");
+          }
+          if (strcmp(new_game.game_id, g_current_game.game_id) != 0) {
+            /* Game changed - end old session, start new */
+            usage_end_session();
+            usage_save();
+            memcpy(&g_current_game, &new_game, sizeof(GameInfo));
+            usage_start_session(g_current_game.game_id, g_current_game.title);
+            net_log("Game changed to: %s", g_current_game.title);
+          }
+        }
+      }
+
+      /* Save periodically (every 30 seconds) */
+      if (now - g_last_heartbeat >= 30 * 1000 * 1000) {
+        g_last_heartbeat = now;
+        usage_save();
+      }
+
+      sceKernelDelayThread(100 * 1000);
+    }
+
+    /* Cleanup - save final usage */
+    usage_end_session();
+    usage_save();
+    net_log("Offline mode ended, usage saved");
     return 0;
   }
 

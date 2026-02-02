@@ -1,5 +1,5 @@
 TARGET = psp_drp_net
-OBJS = src/main.o src/game_detect.o src/network.o src/config.o src/sfo.o src/syscalls.o
+OBJS = src/main.o src/game_detect.o src/network.o src/config.o src/sfo.o src/syscalls.o src/usage_tracker.o
 
 BUILD_PRX = 1
 PRX_EXPORTS = exports.exp

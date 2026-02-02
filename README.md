@@ -25,6 +25,7 @@ Presence + stats
 - **Per-game vblank delay** - configurable delay for games that need extra time to initialize (in case the game freezes on boot)
 - **Support for UMD, ISO/CSO games, PSN, Homebrew** - works with physical and digital games (from the ones i've tested so far)
 - **XMB plugin** - optionally show status even when not in a game
+- **Offline mode** - track usage locally without network (see [Offline Mode](#offline-mode))
 
 ### Desktop Companion
 - **Usage statistics** - tracks total playtime, session count, and last played date for each game
@@ -69,9 +70,11 @@ Presence + stats
    send_once = 0 ; 0 for continuously send status updates, 1 for just send one
    psp_name = My PSP
    ```
-4. Restart your PSP
+3. (Optionally) Copy the `PSP DRP` folder to `ms0:/PSP/GAME/` to view your stats locally
 
-5. Extract the desktop companion app, run it once to generate the config file, then edit it (or use the bundled config.toml):
+5. Restart your PSP
+
+6. Extract the desktop companion app, run it once to generate the config file, then edit it (or use the bundled config.toml):
 
    ```toml
    [discord]
@@ -122,6 +125,7 @@ If you accidentally skipped or change your mind, press **SELECT + L trigger** (o
 | `psp_name` | Custom name for this PSP (shown in Discord) | `PSP` |
 | `enable_logging` | Write debug logs to `ms0:/psp_drp.log` | `0` |
 | `skip_button` | Button to hold during boot to skip plugin (`L`, `R`, `SELECT`, etc.) | `L` |
+| `offline_mode` | Track usage locally without network (see [Offline Mode](#offline-mode)) | `0` |
 
 #### Advanced Settings
 
@@ -179,6 +183,26 @@ Most PSP games work with this plugin, but some have compatibility issues:
 Some games cannot tolerate plugin threads being created during their boot sequence, or some implement their own network stacks which prevent this plugin from grabbing the network for usage. For these games, the plugin cannot be automatically skipped because game detection requires a running thread (which is what causes the freeze), or the game would crash the PSP which is unavoidable at least for the PSP 1000 as I've tested.
 
 If a more consistent way to use the network stack is found, I'll update the plugin to handle this case.
+
+## Offline Mode
+
+For users who want to track game usage **without WiFi** or Discord integration, enable offline mode:
+
+```ini
+offline_mode = 1
+```
+
+In offline mode:
+- **No network initialization** - saves battery and avoids compatibility issues
+- **Local usage tracking** - writes play time data to `ms0:/seplugins/pspdrp/usage.json`
+- **Works with PSP DRP Homebrew App** - the companion homebrew app can read and display your stats
+
+This is useful for:
+- PSPs without WiFi access or with the WiFi switch off
+- Games that conflict with network initialization
+- Users who just want to track playtime without Discord
+
+The `usage.json` file is updated every 30 seconds and on game changes.
 
 ## Troubleshooting
 

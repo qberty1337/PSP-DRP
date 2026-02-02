@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::Config;
 use crate::protocol::{
     parse_packet, DiscoveryRequest, DiscoveryResponse, GameInfo, Heartbeat, IconChunk, IconEnd,
-    IconRequest, MessageType,
+    IconRequest, MessageType, StatsResponse,
 };
 
 /// Maximum UDP packet size
@@ -41,6 +41,10 @@ pub enum ServerEvent {
         game_id: String,
         data: Vec<u8>,
     },
+    /// Stats requested by PSP
+    StatsRequested {
+        addr: SocketAddr,
+    },
 }
 
 /// Connected PSP state
@@ -65,6 +69,13 @@ struct IconBuffer {
 pub enum ServerCommand {
     /// Request an icon for a game from a specific PSP
     RequestIcon { addr: SocketAddr, game_id: String },
+    /// Send stats response to a PSP
+    SendStats { 
+        addr: SocketAddr, 
+        json_data: Vec<u8>,
+        total_games: u16,
+        total_playtime: u64,
+    },
 }
 
 /// UDP server for receiving PSP data
@@ -218,6 +229,11 @@ impl Server {
                                 warn!("Failed to request icon: {}", e);
                             }
                         }
+                        ServerCommand::SendStats { addr, json_data, total_games, total_playtime } => {
+                            if let Err(e) = self.send_stats_response(addr, &json_data, total_games, total_playtime).await {
+                                warn!("Failed to send stats to {}: {}", addr, e);
+                            }
+                        }
                     }
                 }
             }
@@ -341,6 +357,20 @@ impl Server {
                     .await?;
             }
 
+            MessageType::StatsRequest => {
+                info!("Stats request received from {}", addr);
+                
+                // Send ACK first
+                if let Err(e) = self.send_ack(addr).await {
+                    warn!("Failed to send ACK to {}: {}", addr, e);
+                }
+                
+                // Emit event to main loop to handle stats request
+                self.event_tx
+                    .send(ServerEvent::StatsRequested { addr })
+                    .await?;
+            }
+
             _ => {
                 debug!("Unhandled message type: {:?}", msg_type);
             }
@@ -410,6 +440,22 @@ impl Server {
             let packet = request.encode();
             socket.send_to(&packet, addr).await?;
             info!("Requested icon for {} from {}", game_id, addr);
+        }
+        Ok(())
+    }
+
+    /// Send stats response to PSP (chunked if necessary)
+    pub async fn send_stats_response(&self, addr: SocketAddr, json_data: &[u8], total_games: u16, total_playtime: u64) -> Result<()> {
+        if let Some(socket) = &self.socket {
+            let chunks = StatsResponse::new_chunks(json_data, total_games, total_playtime);
+            info!("Sending {} stats chunks ({} bytes) to {}", chunks.len(), json_data.len(), addr);
+            
+            for chunk in chunks {
+                let packet = chunk.encode();
+                socket.send_to(&packet, addr).await?;
+                // Small delay between chunks to avoid overwhelming PSP
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
         }
         Ok(())
     }
