@@ -140,9 +140,80 @@ jobs:
           path: psp-drp-plugin.zip
           retention-days: 1
 
+  # Build PSP Homebrew App (PSP DRP Stats Viewer)
+  build-psp-homebrew:
+    needs: check-merge
+    if: needs.check-merge.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Rust Nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      
+      - name: Clone rust-psp
+        run: |
+          # Clone rust-psp to the expected location for Cargo.toml path dependency
+          mkdir -p research
+          git clone --depth 1 https://github.com/overdrivenpotato/rust-psp.git research/rust-psp
+      
+      - name: Install PSP SDK tools
+        run: |
+          # Install tools needed for cargo-psp (mksfo, pack-pbp, prxgen)
+          sudo apt-get update
+          sudo apt-get install -y build-essential
+          
+          # Install pre-built PSP toolchain
+          curl -L https://github.com/pspdev/pspdev/releases/latest/download/pspdev-ubuntu-latest-x86_64.tar.gz | sudo tar xz -C /usr/local
+          echo "/usr/local/pspdev/bin" >> $GITHUB_PATH
+      
+      - name: Install cargo-psp
+        run: |
+          # Build and install cargo-psp from the cloned rust-psp
+          cd research/rust-psp/cargo-psp
+          cargo install --path .
+      
+      - name: Build PSP Homebrew
+        working-directory: psp-stats-app
+        run: |
+          cargo psp --release
+      
+      - name: Create Release Package
+        run: |
+          mkdir -p "release/PSP DRP"
+          cp psp-stats-app/target/mipsel-sony-psp/release/EBOOT.PBP "release/PSP DRP/"
+          
+          # Create README for the homebrew package
+          cat > release/README.txt << 'EOF'
+          PSP DRP Homebrew App
+          ====================
+
+          This app displays your game usage statistics tracked by the PSP DRP plugin.
+
+          Installation:
+          1. Copy the entire 'PSP DRP' folder to ms0:/PSP/GAME/
+
+          2. The app will read your stats from ms0:/seplugins/pspdrp/usage.json
+             (This file is created by the PSP DRP plugin in offline mode)
+
+          For more information, visit: https://github.com/qberty1337/PSP-DRP
+          EOF
+          
+          cd release && zip -r ../psp-drp-homebrew.zip .
+      
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: psp-drp-homebrew
+          path: psp-drp-homebrew.zip
+          retention-days: 1
+
   # Create GitHub Release with all artifacts
   create-release:
-    needs: [check-merge, build-desktop, build-psp-plugin]
+    needs: [check-merge, build-desktop, build-psp-plugin, build-psp-homebrew]
     if: needs.check-merge.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -173,6 +244,9 @@ jobs:
             **PSP Plugin:**
             - `psp-drp-plugin.zip` - Contains all PRX files and default config
             
+            **PSP Homebrew App:**
+            - `psp-drp-homebrew.zip` - Stats viewer app for PSP (view your playtime on device)
+            
             ### Installation
             
             See the [README](https://github.com/${{ github.repository }}/blob/master/README.md) for full installation instructions.
@@ -185,6 +259,7 @@ jobs:
             artifacts/psp-drp-desktop-linux/psp-drp-desktop-linux.zip
             artifacts/psp-drp-desktop-macos/psp-drp-desktop-macos.zip
             artifacts/psp-drp-plugin/psp-drp-plugin.zip
+            artifacts/psp-drp-homebrew/psp-drp-homebrew.zip
           draft: false
           prerelease: false
           generate_release_notes: false

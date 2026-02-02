@@ -57,6 +57,9 @@ typedef struct {
   /* Vblank wait count before network init (default: 300 = ~5 seconds at 60fps)
    */
   uint32_t vblank_wait;
+
+  /* Offline mode - no network, just local usage tracking */
+  int offline_mode;
 } PluginConfig;
 
 /**

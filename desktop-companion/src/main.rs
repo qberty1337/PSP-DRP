@@ -482,6 +482,46 @@ async fn handle_server_event(
                 }
             }
         }
+
+        ServerEvent::StatsRequested { addr } => {
+            let mut state = tui_state.write().await;
+            state.log_info(&format!("Stats requested from {}", addr));
+            
+            // Get all game stats and prepare JSON
+            let all_stats = usage_tracker.get_all_game_stats();
+            let total_games = all_stats.len() as u16;
+            let total_playtime: u64 = all_stats.iter().map(|(_, _, secs, _, _)| *secs).sum();
+            
+            // Build simplified JSON for PSP (just title, seconds, sessions)
+            let games_json: Vec<String> = all_stats.iter()
+                .map(|(title, game_id, seconds, sessions, _)| {
+                    format!(
+                        r#"{{"title":"{}","game_id":"{}","seconds":{},"sessions":{}}}"#,
+                        title.replace('"', "\\\""),
+                        game_id.replace('"', "\\\""),
+                        seconds,
+                        sessions
+                    )
+                })
+                .collect();
+            
+            let json_data = format!(
+                r#"{{"total_games":{},"total_playtime":{},"games":[{}]}}"#,
+                total_games,
+                total_playtime,
+                games_json.join(",")
+            );
+            
+            state.log_info(&format!("Sending {} games, {} bytes to PSP", total_games, json_data.len()));
+            
+            // Send stats via server command
+            let _ = server_cmd_tx.send(ServerCommand::SendStats {
+                addr,
+                json_data: json_data.into_bytes(),
+                total_games,
+                total_playtime,
+            }).await;
+        }
     }
 }
 

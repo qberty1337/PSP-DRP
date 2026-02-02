@@ -1,0 +1,20 @@
+[package]
+name = "psp-stats-app"
+version = "0.2.0"
+edition = "2018"
+
+[package.metadata.psp]
+title = "PSP DRP"
+
+[dependencies]
+psp = { path = "../research/rust-psp/psp", features = ["embedded-graphics"] }
+embedded-graphics = { version = "0.8.1", features = ["fixed_point"] }
+ratatui = { version = "0.30.0-alpha.5", default-features = false }
+mousefood = { git = "https://github.com/j-g00da/mousefood", rev = "1028ac24f83920fd95a5585a85ef943901ee63ac" }
+
+# Note: Full JSON parsing with serde would add too much binary size
+# We'll use a simple manual parser for the specific usage.json format
+
+[patch.crates-io]
+# Required workaround for PSP stability - disables byte alignment
+unicode-width = { git = "https://git.sr.ht/~sajattack/unicode-width" }

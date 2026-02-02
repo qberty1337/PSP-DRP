@@ -18,6 +18,11 @@ auto_discovery = 1
 ; When enabled, sends one update on plugin load then unloads network
 send_once = 0
 
+; Offline mode - tracks usage locally without network (1 = enabled, 0 = disabled)
+; When enabled, skips network entirely and writes usage.json locally
+; Use with the PSP DRP Homebrew App to view play time stats without WiFi
+offline_mode = 0
+
 ; Send game icons to desktop app (1 = enabled, 0 = disabled)
 send_icons = 1
 

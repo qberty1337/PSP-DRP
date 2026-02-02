@@ -36,6 +36,7 @@ void config_set_defaults(PluginConfig *config) {
   config->send_once = 0;
   config->enable_logging = 0;
   config->vblank_wait = 300; /* Default: ~5 seconds at 60fps */
+  config->offline_mode = 0;  /* Default: online mode */
 }
 
 /**
@@ -257,6 +258,8 @@ static void parse_line(const char *line, PluginConfig *config) {
     if (config->vblank_wait > 1800) {
       config->vblank_wait = 1800; /* Max 30 seconds */
     }
+  } else if (strcmp(key, "offline_mode") == 0) {
+    config->offline_mode = parse_bool(value);
   }
 }
 

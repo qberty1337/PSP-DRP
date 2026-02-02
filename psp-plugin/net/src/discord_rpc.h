@@ -10,7 +10,7 @@
 
 /* Protocol constants */
 #define PROTOCOL_MAGIC "PSPR"
-#define PROTOCOL_VERSION "1.0.0"
+#define PROTOCOL_VERSION "0.2.0"
 #define DEFAULT_PORT 9276
 #define DISCOVERY_PORT 9277
 

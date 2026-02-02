@@ -18,11 +18,13 @@ pub enum MessageType {
     GameInfo = 0x02,
     IconChunk = 0x03,
     IconEnd = 0x04,
+    StatsRequest = 0x05,  // Request usage stats from desktop
     DiscoveryResponse = 0x21,
 
     // Desktop -> PSP
     Ack = 0x10,
     IconRequest = 0x11,  // Request icon for a game_id
+    StatsResponse = 0x12,  // Send usage stats to PSP
     DiscoveryRequest = 0x20,
 }
 
@@ -35,8 +37,10 @@ impl TryFrom<u8> for MessageType {
             0x02 => Ok(Self::GameInfo),
             0x03 => Ok(Self::IconChunk),
             0x04 => Ok(Self::IconEnd),
+            0x05 => Ok(Self::StatsRequest),
             0x10 => Ok(Self::Ack),
             0x11 => Ok(Self::IconRequest),
+            0x12 => Ok(Self::StatsResponse),
             0x20 => Ok(Self::DiscoveryRequest),
             0x21 => Ok(Self::DiscoveryResponse),
             _ => Err(()),
@@ -326,6 +330,80 @@ impl IconRequest {
         let copy_len = game_id_bytes.len().min(9);
         buf.extend_from_slice(&game_id_bytes[..copy_len]);
         buf.resize(buf.len() + (10 - copy_len), 0);
+
+        buf
+    }
+}
+
+/// Stats response (sent by desktop to PSP with usage stats)
+/// Format: [total_games:u16][total_playtime:u64][chunk_index:u16][total_chunks:u16][data_len:u16][json_data...]
+#[derive(Debug, Clone)]
+pub struct StatsResponse {
+    pub total_games: u16,
+    pub total_playtime: u64,  // Total playtime in seconds
+    pub chunk_index: u16,
+    pub total_chunks: u16,
+    pub json_data: Vec<u8>,   // Chunk of JSON usage data
+}
+
+impl StatsResponse {
+    /// Create a new stats response with chunked data
+    pub fn new_chunks(json_data: &[u8], total_games: u16, total_playtime: u64) -> Vec<Self> {
+        const MAX_CHUNK_SIZE: usize = 1024;  // Keep packets under UDP MTU
+        
+        let total_chunks = ((json_data.len() + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE).max(1) as u16;
+        
+        let mut chunks = Vec::new();
+        let mut offset = 0;
+        
+        for chunk_index in 0..total_chunks {
+            let end = (offset + MAX_CHUNK_SIZE).min(json_data.len());
+            let chunk_data = if offset < json_data.len() {
+                json_data[offset..end].to_vec()
+            } else {
+                Vec::new()
+            };
+            
+            chunks.push(Self {
+                total_games,
+                total_playtime,
+                chunk_index,
+                total_chunks,
+                json_data: chunk_data,
+            });
+            
+            offset += MAX_CHUNK_SIZE;
+        }
+        
+        chunks
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(4 + 1 + 16 + self.json_data.len());
+
+        // Magic
+        buf.extend_from_slice(MAGIC);
+
+        // Type
+        buf.push(MessageType::StatsResponse as u8);
+
+        // Total games (2 bytes)
+        buf.extend_from_slice(&self.total_games.to_le_bytes());
+        
+        // Total playtime (8 bytes)
+        buf.extend_from_slice(&self.total_playtime.to_le_bytes());
+        
+        // Chunk index (2 bytes)
+        buf.extend_from_slice(&self.chunk_index.to_le_bytes());
+        
+        // Total chunks (2 bytes)
+        buf.extend_from_slice(&self.total_chunks.to_le_bytes());
+        
+        // Data length (2 bytes)
+        buf.extend_from_slice(&(self.json_data.len() as u16).to_le_bytes());
+        
+        // JSON data
+        buf.extend_from_slice(&self.json_data);
 
         buf
     }
