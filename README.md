@@ -1,4 +1,5 @@
 # PSP DRP (Discord Rich Presence)
+
 <p align="center">
   <img src="pspdrpdiscord.png" alt="Screenshot">
 </p>
@@ -240,3 +241,7 @@ make
 If you liked my work, consider grabbing a coffee:
 
 [![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=fzzylogic&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/fzzylogic)
+
+For some support join the Discord:
+
+[![Discord](https://img.shields.io/discord/195376317179363330?label=Discord&logo=discord&style=for-the-badge)](https://discord.gg/fuzzylogic)
