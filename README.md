@@ -236,3 +236,7 @@ make
 - [ARK-4](https://github.com/PSP-Archive/ARK-4) - Custom firmware
 - [discord-rich-presence](https://crates.io/crates/discord-rich-presence) - Rust Discord RPC library
 - [libretro-thumbnails](https://github.com/libretro-thumbnails/Sony_-_PlayStation_Portable) - Game thumbnail images used by the desktop app
+
+If you liked my work, consider grabbing a coffee:
+
+[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=fzzylogic&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/fzzylogic)
