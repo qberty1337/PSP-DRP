@@ -50,17 +50,19 @@ Presence + stats
 
 ### 1. Extract and Install PSP DRP
 
-1. Copy all PRX files to `ms0:/SEPLUGINS/pspdrp/`:
+1. Download the latest release from [GitHub](https://github.com/qberty1337/PSP-DRP/releases)
+2. Extract the downloaded zip file
+3. Copy all PRX files to `ms0:/SEPLUGINS/pspdrp/`:
    - `psp-plugin/loader/psp_drp_loader.prx`
    - `psp-plugin/loader/psp_drp_loader_game.prx`
    - `psp-plugin/net/psp_drp_net.prx`
-2. Update `ms0:/SEPLUGINS/plugins.txt` and add:
+4. Update `ms0:/SEPLUGINS/plugins.txt` and add:
    ```
    xmb, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    ```
    (Do not add `psp_drp_net.prx` to plugins.txt - it is loaded automatically, also do not include the xmb line if you dont want XMB browsing/idle statuses)
-3. Create config file `ms0:/SEPLUGINS/pspdrp/psp_drp.ini` or use the psp_drp.ini that is bundled in the release:
+5. Create config file `ms0:/SEPLUGINS/pspdrp/psp_drp.ini` or use the psp_drp.ini that is bundled in the release:
    ```ini
    enabled = 1
    desktop_ip = 192.168.1.100  ; Your PC's IP address, leave empty to auto-discover
@@ -70,9 +72,9 @@ Presence + stats
    send_once = 0 ; 0 for continuously send status updates, 1 for just send one
    psp_name = My PSP
    ```
-4. Restart your PSP
+6. Restart your PSP
 
-5. Extract the desktop companion app, run it once to generate the config file, then edit it (or use the bundled config.toml):
+7. Extract the desktop companion app, run it once to generate the config file, then edit it (or use the bundled config.toml):
 
    ```toml
    [discord]
