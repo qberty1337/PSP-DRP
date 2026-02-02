@@ -1,4 +1,5 @@
 # PSP DRP (Discord Rich Presence)
+
 <p align="center">
   <img src="pspdrpdiscord.png" alt="Screenshot">
 </p>
@@ -7,7 +8,7 @@
 </p>
 
 Display your PSP gaming activity on Discord, and track your game stats! This project consists of two components:
-Presence + stats
+Presence + stats (read the [nostalgic blog post](https://qberty.com/psp-drp-game-stats-discord-rich-presence-for-psp/) about it!)
 1. **PSP Plugin** - Runs on your PSP under CFW, detects games/apps, and sends data over WiFi to the desktop app
 2. **Desktop Companion** - A desktop app built in Rust that receives PSP game data and updates Discord Rich 
 
@@ -50,17 +51,19 @@ Presence + stats
 
 ### 1. Extract and Install PSP DRP
 
-1. Copy all PRX files to `ms0:/SEPLUGINS/pspdrp/`:
+1. Download the latest release from [GitHub](https://github.com/qberty1337/PSP-DRP/releases)
+2. Extract the downloaded zip file
+3. Copy all PRX files to `ms0:/SEPLUGINS/pspdrp/`:
    - `psp-plugin/loader/psp_drp_loader.prx`
    - `psp-plugin/loader/psp_drp_loader_game.prx`
    - `psp-plugin/net/psp_drp_net.prx`
-2. Update `ms0:/SEPLUGINS/plugins.txt` and add:
+4. Update `ms0:/SEPLUGINS/plugins.txt` and add:
    ```
    xmb, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader.prx, on
    ```
    (Do not add `psp_drp_net.prx` to plugins.txt - it is loaded automatically, also do not include the xmb line if you dont want XMB browsing/idle statuses)
-3. Create config file `ms0:/SEPLUGINS/pspdrp/psp_drp.ini` or use the psp_drp.ini that is bundled in the release:
+5. Create config file `ms0:/SEPLUGINS/pspdrp/psp_drp.ini` or use the psp_drp.ini that is bundled in the release:
    ```ini
    enabled = 1
    desktop_ip = 192.168.1.100  ; Your PC's IP address, leave empty to auto-discover
@@ -260,3 +263,11 @@ make
 - [ARK-4](https://github.com/PSP-Archive/ARK-4) - Custom firmware
 - [discord-rich-presence](https://crates.io/crates/discord-rich-presence) - Rust Discord RPC library
 - [libretro-thumbnails](https://github.com/libretro-thumbnails/Sony_-_PlayStation_Portable) - Game thumbnail images used by the desktop app
+
+If you liked my work, consider grabbing a coffee:
+
+[![Buy Me a Coffee](https://img.buymeacoffee.com/button-api/?text=Buy%20me%20a%20coffee&emoji=☕&slug=fzzylogic&button_colour=FFDD00&font_colour=000000&font_family=Cookie&outline_colour=000000&coffee_colour=ffffff)](https://www.buymeacoffee.com/fzzylogic)
+
+For some support join the Discord:
+
+[![Discord](https://img.shields.io/discord/195376317179363330?label=Discord&logo=discord&style=for-the-badge)](https://discord.gg/fuzzylogic)
