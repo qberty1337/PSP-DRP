@@ -8,7 +8,7 @@
 </p>
 
 Display your PSP gaming activity on Discord, and track your game stats! This project consists of two components:
-Presence + stats
+Presence + stats (read the [nostalgic blog post](https://qberty.com/psp-drp-game-stats-discord-rich-presence-for-psp/) about it!)
 1. **PSP Plugin** - Runs on your PSP under CFW, detects games/apps, and sends data over WiFi to the desktop app
 2. **Desktop Companion** - A desktop app built in Rust that receives PSP game data and updates Discord Rich 
 
