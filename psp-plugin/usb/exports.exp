@@ -1,0 +1,23 @@
+# Export functions for net module to call
+PSP_BEGIN_EXPORTS
+
+PSP_EXPORT_START(syslib, 0x0000, 0x8000)
+PSP_EXPORT_FUNC(module_start)
+PSP_EXPORT_FUNC(module_stop)
+PSP_EXPORT_END
+
+# Functions exported as syscalls - 0x4001 enables user-mode access
+PSP_EXPORT_START(psp_drp_usb, 0x0000, 0x4001)
+PSP_EXPORT_FUNC(usb_drp_init)
+PSP_EXPORT_FUNC(usb_drp_start)
+PSP_EXPORT_FUNC(usb_drp_stop)
+PSP_EXPORT_FUNC(usb_drp_shutdown)
+PSP_EXPORT_FUNC(usb_drp_is_connected)
+PSP_EXPORT_FUNC(usb_drp_send)
+PSP_EXPORT_FUNC(usb_drp_receive)
+PSP_EXPORT_FUNC(usb_drp_send_game_info)
+PSP_EXPORT_FUNC(usb_drp_send_heartbeat)
+PSP_EXPORT_FUNC(usb_drp_poll_message)
+PSP_EXPORT_END
+
+PSP_END_EXPORTS

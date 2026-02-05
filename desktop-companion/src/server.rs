@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::config::Config;
 use crate::protocol::{
     parse_packet, DiscoveryRequest, DiscoveryResponse, GameInfo, Heartbeat, IconChunk, IconEnd,
-    IconRequest, MessageType, StatsResponse,
+    IconRequest, MessageType, StatsResponse, StatsUpload,
 };
 
 /// Maximum UDP packet size
@@ -44,6 +44,14 @@ pub enum ServerEvent {
     /// Stats requested by PSP
     StatsRequested {
         addr: SocketAddr,
+        psp_name: String,
+    },
+    /// Stats uploaded from PSP
+    StatsUploaded {
+        addr: SocketAddr,
+        psp_name: String,
+        last_updated: u64,
+        json_data: String,
     },
 }
 
@@ -55,6 +63,16 @@ struct PspConnection {
     icon_buffer: HashMap<String, IconBuffer>,
     discovery_sent: bool,
     persistent: bool,
+    /// Accumulating stats upload data
+    stats_upload_buffer: Option<StatsUploadBuffer>,
+}
+
+/// Buffer for accumulating chunked stats uploads
+struct StatsUploadBuffer {
+    chunks: Vec<Option<Vec<u8>>>,
+    total_chunks: u16,
+    received_chunks: u16,
+    last_updated: u64,
 }
 
 /// Buffer for receiving icon chunks
@@ -73,8 +91,7 @@ pub enum ServerCommand {
     SendStats { 
         addr: SocketAddr, 
         json_data: Vec<u8>,
-        total_games: u16,
-        total_playtime: u64,
+        last_updated: u64,
     },
 }
 
@@ -229,8 +246,8 @@ impl Server {
                                 warn!("Failed to request icon: {}", e);
                             }
                         }
-                        ServerCommand::SendStats { addr, json_data, total_games, total_playtime } => {
-                            if let Err(e) = self.send_stats_response(addr, &json_data, total_games, total_playtime).await {
+                        ServerCommand::SendStats { addr, json_data, last_updated } => {
+                            if let Err(e) = self.send_stats_response(addr, &json_data, last_updated).await {
                                 warn!("Failed to send stats to {}: {}", addr, e);
                             }
                         }
@@ -343,6 +360,7 @@ impl Server {
                                 icon_buffer: HashMap::new(),
                                 discovery_sent: true,
                                 persistent: false,
+                                stats_upload_buffer: None,
                             },
                         );
                     }
@@ -365,10 +383,29 @@ impl Server {
                     warn!("Failed to send ACK to {}: {}", addr, e);
                 }
                 
+                // Get PSP name for the event
+                let psp_name = {
+                    let conns = self.connections.read().await;
+                    conns.get(&addr).map(|c| c.name.clone()).unwrap_or_default()
+                };
+                
                 // Emit event to main loop to handle stats request
                 self.event_tx
-                    .send(ServerEvent::StatsRequested { addr })
+                    .send(ServerEvent::StatsRequested { addr, psp_name })
                     .await?;
+            }
+
+            MessageType::StatsUpload => {
+                let upload = StatsUpload::decode(payload)?;
+                debug!("Stats upload chunk {}/{} from {}", upload.chunk_index + 1, upload.total_chunks, addr);
+                
+                // Send ACK
+                if let Err(e) = self.send_ack(addr).await {
+                    warn!("Failed to send ACK to {}: {}", addr, e);
+                }
+                
+                // Handle the chunk and check if complete
+                self.handle_stats_upload_chunk(addr, upload).await?;
             }
 
             _ => {
@@ -402,6 +439,7 @@ impl Server {
                 icon_buffer: HashMap::new(),
                 discovery_sent: auto,
                 persistent: false,
+                stats_upload_buffer: None,
             },
         );
         auto
@@ -445,9 +483,9 @@ impl Server {
     }
 
     /// Send stats response to PSP (chunked if necessary)
-    pub async fn send_stats_response(&self, addr: SocketAddr, json_data: &[u8], total_games: u16, total_playtime: u64) -> Result<()> {
+    pub async fn send_stats_response(&self, addr: SocketAddr, json_data: &[u8], last_updated: u64) -> Result<()> {
         if let Some(socket) = &self.socket {
-            let chunks = StatsResponse::new_chunks(json_data, total_games, total_playtime);
+            let chunks = StatsResponse::new_chunks(json_data, last_updated);
             info!("Sending {} stats chunks ({} bytes) to {}", chunks.len(), json_data.len(), addr);
             
             for chunk in chunks {
@@ -457,6 +495,70 @@ impl Server {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
+        Ok(())
+    }
+
+    /// Handle a stats upload chunk
+    async fn handle_stats_upload_chunk(&self, addr: SocketAddr, upload: StatsUpload) -> Result<()> {
+        let (psp_name, completed_data) = {
+            let mut conns = self.connections.write().await;
+            if let Some(conn) = conns.get_mut(&addr) {
+                // Initialize buffer on first chunk
+                if upload.chunk_index == 0 {
+                    conn.stats_upload_buffer = Some(StatsUploadBuffer {
+                        chunks: vec![None; upload.total_chunks as usize],
+                        total_chunks: upload.total_chunks,
+                        received_chunks: 0,
+                        last_updated: upload.last_updated,
+                    });
+                }
+                
+                // Store chunk
+                if let Some(buffer) = &mut conn.stats_upload_buffer {
+                    if (upload.chunk_index as usize) < buffer.chunks.len() {
+                        if buffer.chunks[upload.chunk_index as usize].is_none() {
+                            buffer.received_chunks += 1;
+                        }
+                        buffer.chunks[upload.chunk_index as usize] = Some(upload.json_data);
+                        
+                        // Check if complete
+                        if buffer.received_chunks >= buffer.total_chunks {
+                            // Assemble all chunks
+                            let mut data = Vec::new();
+                            for chunk in buffer.chunks.iter().flatten() {
+                                data.extend(chunk);
+                            }
+                            let last_updated = buffer.last_updated;
+                            conn.stats_upload_buffer = None;
+                            (conn.name.clone(), Some((data, last_updated)))
+                        } else {
+                            (String::new(), None)
+                        }
+                    } else {
+                        (String::new(), None)
+                    }
+                } else {
+                    (String::new(), None)
+                }
+            } else {
+                (String::new(), None)
+            }
+        };
+        
+        // If we have completed data, emit event
+        if let Some((data, last_updated)) = completed_data {
+            let json_data = String::from_utf8_lossy(&data).to_string();
+            info!("Received complete stats upload from {} ({} bytes)", psp_name, json_data.len());
+            self.event_tx
+                .send(ServerEvent::StatsUploaded { 
+                    addr, 
+                    psp_name,
+                    last_updated,
+                    json_data,
+                })
+                .await?;
+        }
+        
         Ok(())
     }
 

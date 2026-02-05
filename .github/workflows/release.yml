@@ -20,11 +20,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Check if should release
         id: check
         run: echo "should_release=true" >> $GITHUB_OUTPUT
-      
+
       - name: Extract version from Cargo.toml
         id: version
         run: |
@@ -52,21 +52,21 @@ jobs:
             target: x86_64-apple-darwin
             binary_name: psp-drp
             archive_name: psp-drp-desktop-macos
-    
+
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      
+
       - name: Build Release
         working-directory: desktop-companion
         run: cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Create Release Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
@@ -75,7 +75,7 @@ jobs:
           Copy-Item "desktop-companion/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -Destination "release/"
           Copy-Item "desktop-companion/config.toml.example" -Destination "release/config.toml"
           Compress-Archive -Path "release/*" -DestinationPath "${{ matrix.archive_name }}.zip"
-      
+
       - name: Create Release Package (Linux/macOS)
         if: matrix.os != 'windows-latest'
         run: |
@@ -83,7 +83,7 @@ jobs:
           cp "desktop-companion/target/${{ matrix.target }}/release/${{ matrix.binary_name }}" release/
           cp "desktop-companion/config.toml.example" release/config.toml
           cd release && zip -r "../${{ matrix.archive_name }}.zip" .
-      
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -99,20 +99,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Build PSP Plugin
         run: |
           docker compose run --rm pspdev make clean-all
           docker compose run --rm pspdev make
-      
+
       - name: Create Release Package
         run: |
           mkdir -p release/pspdrp
           cp psp-plugin/psp_drp_loader.prx release/pspdrp/
           cp psp-plugin/psp_drp_loader_game.prx release/pspdrp/
           cp psp-plugin/psp_drp_net.prx release/pspdrp/
+          cp psp-plugin/psp_drp_usb.prx release/pspdrp/
           cp psp-plugin/psp_drp.ini.example release/pspdrp/psp_drp.ini
-          
+
           # Create README for the PSP plugin package
           cat > release/README.txt << 'EOF'
           PSP DRP Plugin Installation
@@ -125,14 +126,16 @@ jobs:
              game, ms0:/SEPLUGINS/pspdrp/psp_drp_loader_game.prx, on
 
           3. Edit psp_drp.ini to configure your desktop IP and preferences
+             - Set usb_mode = 1 for USB mode (syncs stats over USB)
+             - Set offline_mode = 1 for offline mode (no network needed)
 
           4. Restart your PSP
 
           For more information, visit: https://github.com/qberty1337/PSP-DRP
           EOF
-          
+
           cd release && zip -r ../psp-drp-plugin.zip .
-      
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -148,44 +151,44 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Rust Nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
-      
+
       - name: Clone rust-psp
         run: |
           # Clone rust-psp to the expected location for Cargo.toml path dependency
           mkdir -p research
           git clone --depth 1 https://github.com/overdrivenpotato/rust-psp.git research/rust-psp
-      
+
       - name: Install PSP SDK tools
         run: |
           # Install tools needed for cargo-psp (mksfo, pack-pbp, prxgen)
           sudo apt-get update
           sudo apt-get install -y build-essential
-          
+
           # Install pre-built PSP toolchain
           curl -L https://github.com/pspdev/pspdev/releases/latest/download/pspdev-ubuntu-latest-x86_64.tar.gz | sudo tar xz -C /usr/local
           echo "/usr/local/pspdev/bin" >> $GITHUB_PATH
-      
+
       - name: Install cargo-psp
         run: |
           # Build and install cargo-psp from the cloned rust-psp
           cd research/rust-psp/cargo-psp
           cargo install --path .
-      
+
       - name: Build PSP Homebrew
         working-directory: psp-stats-app
         run: |
           cargo psp --release
-      
+
       - name: Create Release Package
         run: |
           mkdir -p "release/PSP DRP"
           cp psp-stats-app/target/mipsel-sony-psp/release/EBOOT.PBP "release/PSP DRP/"
-          
+
           # Create README for the homebrew package
           cat > release/README.txt << 'EOF'
           PSP DRP Homebrew App
@@ -201,9 +204,9 @@ jobs:
 
           For more information, visit: https://github.com/qberty1337/PSP-DRP
           EOF
-          
+
           cd release && zip -r ../psp-drp-homebrew.zip .
-      
+
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -219,15 +222,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
+
       - name: List artifacts
         run: find artifacts -type f
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -235,24 +238,24 @@ jobs:
           name: PSP DRP ${{ needs.check-merge.outputs.version }}
           body: |
             ### Downloads
-            
+
             **Desktop Companion App:**
             - `psp-drp-desktop-windows.zip` - Windows (x64)
             - `psp-drp-desktop-linux.zip` - Linux (x64)
             - `psp-drp-desktop-macos.zip` - macOS (x64)
-            
+
             **PSP Plugin:**
             - `psp-drp-plugin.zip` - Contains all PRX files and default config
-            
+
             **PSP Homebrew App:**
             - `psp-drp-homebrew.zip` - Stats viewer app for PSP (view your playtime on device)
-            
+
             ### Installation
-            
+
             See the [README](https://github.com/${{ github.repository }}/blob/master/README.md) for full installation instructions.
-            
+
             ### Changelog
-            
+
             ${{ github.event.pull_request.body }}
           files: |
             artifacts/psp-drp-desktop-windows/psp-drp-desktop-windows.zip

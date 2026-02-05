@@ -24,6 +24,8 @@ pub struct Config {
     pub has_ip: bool,
     /// Offline mode - skip network, use local usage.json
     pub offline_mode: bool,
+    /// USB mode - offline mode + desktop companion auto-syncs
+    pub usb_mode: bool,
     /// Enable debug logging
     pub enable_logging: bool,
 }
@@ -35,6 +37,7 @@ impl Default for Config {
             port: 9276,
             has_ip: false,
             offline_mode: false,
+            usb_mode: false,
             enable_logging: false,
         }
     }
@@ -44,7 +47,7 @@ impl Default for Config {
 const INI_PATH: &[u8] = b"ms0:/seplugins/pspdrp/psp_drp.ini\0";
 
 /// Usage JSON file path on PSP memory stick
-const USAGE_PATH: &[u8] = b"ms0:/seplugins/pspdrp/usage.json\0";
+const USAGE_PATH: &[u8] = b"ms0:/seplugins/pspdrp/usage_log.json\0";
 
 /// Read and parse the config file
 pub fn load_config() -> Config {
@@ -91,6 +94,13 @@ pub fn load_config() -> Config {
                 "offline_mode" => {
                     config.offline_mode = value == "1" || value.eq_ignore_ascii_case("true");
                 }
+                "usb_mode" => {
+                    config.usb_mode = value == "1" || value.eq_ignore_ascii_case("true");
+                    // USB mode implies offline mode
+                    if config.usb_mode {
+                        config.offline_mode = true;
+                    }
+                }
                 "enable_logging" => {
                     config.enable_logging = value == "1" || value.eq_ignore_ascii_case("true");
                 }
@@ -113,6 +123,96 @@ pub fn load_usage_json() -> Option<String> {
 /// Returns true if successful
 pub fn save_usage_json(json: &[u8]) -> bool {
     write_file(USAGE_PATH, json)
+}
+
+/// Update the hidden flag for a specific game in usage.json
+/// Returns true if successful
+pub fn update_game_hidden(game_key: &str, hidden: bool) -> bool {
+    // Load existing JSON
+    let json = match load_usage_json() {
+        Some(j) => j,
+        None => return false,
+    };
+    
+    // Find the game entry by game_key (format: "GAMEID:1": { ... })
+    let search_pattern = alloc::format!("\"{}\":", game_key);
+    let key_pos = match json.find(&search_pattern) {
+        Some(pos) => pos,
+        None => return false,
+    };
+    
+    // Find the opening brace after the key
+    let after_key = &json[key_pos + search_pattern.len()..];
+    let brace_offset = match after_key.find('{') {
+        Some(pos) => pos,
+        None => return false,
+    };
+    let obj_start = key_pos + search_pattern.len() + brace_offset;
+    
+    // Find the closing brace for this game object
+    let mut brace_count = 1;
+    let mut obj_end = obj_start + 1;
+    for (i, c) in json[obj_start + 1..].chars().enumerate() {
+        match c {
+            '{' => brace_count += 1,
+            '}' => {
+                brace_count -= 1;
+                if brace_count == 0 {
+                    obj_end = obj_start + 1 + i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    let game_obj = &json[obj_start..obj_end + 1];
+    
+    // Build the new game object with updated hidden field
+    let hidden_str = if hidden { "true" } else { "false" };
+    
+    let new_game_obj = if let Some(hidden_pos) = game_obj.find("\"hidden\":") {
+        // Replace existing hidden value
+        let relative_pos = hidden_pos;
+        let after_hidden_key = &game_obj[relative_pos + 9..]; // 9 = len of "hidden":
+        
+        // Find end of the value (until comma, newline, or closing brace)
+        let mut value_end = 0;
+        for (i, c) in after_hidden_key.chars().enumerate() {
+            match c {
+                ',' | '\n' | '\r' | '}' => {
+                    value_end = i;
+                    break;
+                }
+                _ => value_end = i + 1,
+            }
+        }
+        
+        // Build new string: before hidden + "hidden": value + after value
+        let before = &game_obj[..relative_pos + 9]; // includes "hidden":
+        let after = &after_hidden_key[value_end..];
+        alloc::format!("{} {}{}", before, hidden_str, after)
+    } else {
+        // Insert hidden field after the opening brace
+        let insert_pos = 1; // After '{'
+        let before = &game_obj[..insert_pos];
+        let after = &game_obj[insert_pos..];
+        
+        // Check if there's content after the brace
+        let trimmed_after = after.trim_start();
+        if trimmed_after.starts_with('"') || trimmed_after.starts_with('\n') {
+            // There's existing content, add hidden before it
+            alloc::format!("{}\n      \"hidden\": {},\n     {}", before, hidden_str, after.trim_start())
+        } else {
+            alloc::format!("{} \"hidden\": {}, {}", before, hidden_str, after)
+        }
+    };
+    
+    // Build the new JSON
+    let new_json = alloc::format!("{}{}{}", &json[..obj_start], new_game_obj, &json[obj_end + 1..]);
+    
+    // Save it
+    save_usage_json(new_json.as_bytes())
 }
 
 /// Parse an IP address string like "192.168.1.100" into [u8; 4]

@@ -35,6 +35,12 @@ struct TrackedGame {
     /// Dates when this game was played (YYYY-MM-DD format)
     #[serde(default)]
     play_dates: std::collections::HashSet<String>,
+    /// Playtime per day (date -> seconds)
+    #[serde(default)]
+    daily_playtime: HashMap<String, u64>,
+    /// Whether this game is hidden from stats display
+    #[serde(default)]
+    hidden: bool,
 }
 
 /// Per-PSP usage data
@@ -69,6 +75,9 @@ struct PspTracker {
 struct UsageData {
     /// Per-PSP usage data, keyed by PSP name
     psps: HashMap<String, PspUsageData>,
+    /// Unix timestamp of last modification (for sync)
+    #[serde(default)]
+    last_updated: Option<u64>,
 }
 
 /// Usage tracker that records game sessions
@@ -317,13 +326,17 @@ impl UsageTracker {
                 last_played: String::new(),
                 session_count: 0,
                 play_dates: std::collections::HashSet::new(),
+                daily_playtime: HashMap::new(),
+                hidden: false,
             }
         });
 
         // Add delta to total (not replace)
         game_data.total_seconds += delta;
         game_data.last_played = now;
-        game_data.play_dates.insert(today);
+        game_data.play_dates.insert(today.clone());
+        // Track per-day playtime
+        *game_data.daily_playtime.entry(today).or_insert(0) += delta;
         let total_for_log = game_data.total_seconds;
 
         self.save_data(&data);
@@ -372,6 +385,8 @@ impl UsageTracker {
                 last_played: String::new(),
                 session_count: 0,
                 play_dates: std::collections::HashSet::new(),
+                daily_playtime: HashMap::new(),
+                hidden: false,
             }
         });
 
@@ -379,7 +394,9 @@ impl UsageTracker {
         game_data.total_seconds += delta;
         game_data.last_played = now;
         game_data.session_count += 1;
-        game_data.play_dates.insert(today);
+        game_data.play_dates.insert(today.clone());
+        // Track per-day playtime
+        *game_data.daily_playtime.entry(today).or_insert(0) += delta;
         let total_for_log = game_data.total_seconds;
 
         self.save_data(&data);
@@ -445,6 +462,7 @@ impl UsageTracker {
 
     /// Get all game stats across all PSPs
     /// Returns a vector of detailed game stats, sorted by playtime descending
+    /// Hidden games are filtered out
     pub fn get_all_game_stats(&self) -> Vec<(String, String, u64, u32, String)> {
         let data = self.load_data();
         
@@ -454,8 +472,8 @@ impl UsageTracker {
         
         for psp_data in data.psps.values() {
             for game in psp_data.games.values() {
-                // Skip entries with no title
-                if game.title.is_empty() {
+                // Skip entries with no title or hidden games
+                if game.title.is_empty() || game.hidden {
                     continue;
                 }
                 
@@ -527,6 +545,175 @@ impl UsageTracker {
         }
         
         date_games
+    }
+    
+    /// Get game stats for a specific date
+    /// Returns a vector of (title, seconds_on_that_day), sorted by playtime descending
+    pub fn get_game_stats_for_date(&self, date: &str) -> Vec<(String, u64)> {
+        let data = self.load_data();
+        
+        // Aggregate by title for this specific date
+        let mut game_map: HashMap<String, u64> = HashMap::new();
+        
+        for psp_data in data.psps.values() {
+            for game in psp_data.games.values() {
+                // Skip entries with no title
+                if game.title.is_empty() {
+                    continue;
+                }
+                
+                // Check if game was played on this date
+                if let Some(&seconds) = game.daily_playtime.get(date) {
+                    *game_map.entry(game.title.clone()).or_insert(0) += seconds;
+                }
+            }
+        }
+        
+        // Convert to vector and sort by playtime descending
+        let mut result: Vec<(String, u64)> = game_map.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1));
+        
+        result
+    }
+
+    // ========== SYNC-RELATED METHODS ==========
+
+    /// Get the last_updated timestamp for sync comparison
+    pub fn get_last_updated(&self) -> u64 {
+        let data = self.load_data();
+        data.last_updated.unwrap_or(0)
+    }
+
+    /// Update the last_updated timestamp to now
+    fn set_updated_now(&self, data: &mut UsageData) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        data.last_updated = Some(now);
+    }
+
+    /// Get usage data as JSON (for sending to PSP)
+    /// Returns the entire raw JSON file content and the last_updated timestamp
+    pub fn get_usage_for_psp_json(&self, _psp_name: &str) -> (String, u64) {
+        // Just read and return the raw file content
+        if let Ok(mut file) = std::fs::File::open(&self.data_path) {
+            let mut contents = String::new();
+            if file.read_to_string(&mut contents).is_ok() {
+                // Parse to get last_updated timestamp
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&contents) {
+                    let last_updated = data.get("last_updated")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    return (contents, last_updated);
+                }
+            }
+        }
+        // Return empty if file doesn't exist
+        (String::from("{}"), 0)
+    }
+
+    /// Merge usage data received from PSP (high-water-mark strategy)
+    /// Takes higher values for playtime/sessions, unions daily playtime entries
+    pub fn merge_from_psp(&self, psp_name: &str, json_data: &str) -> anyhow::Result<u32> {
+        use serde_json::Value;
+        
+        let mut data = self.load_data();
+        let mut merge_count = 0u32;
+        
+        let remote: Value = serde_json::from_str(json_data)?;
+        
+        // Get or create PSP entry
+        let psp_data = data.psps.entry(psp_name.to_string()).or_insert_with(|| {
+            PspUsageData {
+                psp_name: psp_name.to_string(),
+                games: HashMap::new(),
+            }
+        });
+        
+        // Parse games array
+        if let Some(games) = remote.get("games").and_then(|g| g.as_array()) {
+            for game_val in games {
+                let game_id = game_val.get("game_id")
+                    .or_else(|| game_val.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                
+                if game_id.is_empty() {
+                    continue;
+                }
+                
+                let remote_title = game_val.get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                let remote_seconds = game_val.get("seconds")
+                    .or_else(|| game_val.get("total_seconds"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let remote_sessions = game_val.get("sessions")
+                    .or_else(|| game_val.get("session_count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                
+                // Use game_id as key (without state suffix since PSP doesn't track states)
+                let game_key = game_id.to_string();
+                
+                let game_data = psp_data.games.entry(game_key).or_insert_with(|| {
+                    TrackedGame {
+                        game_id: game_id.to_string(),
+                        title: remote_title.to_string(),
+                        total_seconds: 0,
+                        first_played: String::new(),
+                        last_played: String::new(),
+                        session_count: 0,
+                        play_dates: std::collections::HashSet::new(),
+                        daily_playtime: HashMap::new(),
+                        hidden: false,
+                    }
+                });
+                
+                // High-water-mark: take higher values
+                if remote_seconds > game_data.total_seconds {
+                    game_data.total_seconds = remote_seconds;
+                    merge_count += 1;
+                }
+                if remote_sessions > game_data.session_count {
+                    game_data.session_count = remote_sessions;
+                }
+                // Fill in title if missing
+                if game_data.title.is_empty() && !remote_title.is_empty() {
+                    game_data.title = remote_title.to_string();
+                }
+                
+                // Merge daily playtime (take max for each date)
+                if let Some(daily) = game_val.get("daily").and_then(|d| d.as_array()) {
+                    for entry in daily {
+                        let date = entry.get("date")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
+                        let secs = entry.get("secs")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        
+                        if !date.is_empty() {
+                            let existing = game_data.daily_playtime.entry(date.to_string()).or_insert(0);
+                            if secs > *existing {
+                                *existing = secs;
+                            }
+                            game_data.play_dates.insert(date.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Update timestamp and save
+        self.set_updated_now(&mut data);
+        self.save_data(&data);
+        
+        info!("Usage tracker: merged {} games from PSP '{}'", merge_count, psp_name);
+        Ok(merge_count)
     }
 }
 

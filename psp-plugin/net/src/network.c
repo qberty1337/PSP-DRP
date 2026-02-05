@@ -44,6 +44,19 @@ static SceUInt64 g_start_time = 0;
 /* Selected profile ID */
 static int g_profile_id = 1;
 
+/* Stats streaming state (write directly to file as received) */
+#define USAGE_LOG_PATH "ms0:/seplugins/pspdrp/usage_log.json"
+static struct {
+  SceUID fd;              /* File handle for streaming writes */
+  uint32_t total_bytes;   /* Expected total bytes (from first chunk) */
+  uint32_t bytes_written; /* Actual bytes written so far */
+  uint16_t total_chunks;
+  uint16_t received_chunks;
+  uint64_t last_updated;
+  int active;
+  int verified; /* 1 if bytes match, 0 if failed */
+} g_stats_stream = {.fd = -1, .active = 0};
+
 /* Forward declarations */
 static int connect_to_ap(void);
 static int wait_for_connection(int timeout_seconds);
@@ -327,11 +340,11 @@ void network_disconnect(void) {
 
 /**
  * Poll for incoming messages (ACK or icon request)
- * Returns: 1 = ACK received, 2 = icon request received, 0 = nothing
- * If icon request, game_id_out will be filled
+ * Returns: 1 = ACK received, 2 = icon request received, 3 = stats response, 0 =
+ * nothing If icon request, game_id_out will be filled
  */
 int network_poll_message(char *game_id_out) {
-  uint8_t buffer[32];
+  uint8_t buffer[MAX_PACKET_SIZE];
   struct sockaddr_in from_addr;
   socklen_t from_len = sizeof(from_addr);
   int ret;
@@ -372,6 +385,85 @@ int network_poll_message(char *game_id_out) {
       }
       return 2;
     }
+  }
+
+  /* Stats response received - stream directly to file */
+  if (buffer[4] == MSG_STATS_RESPONSE) {
+    /* Fixed header size: total_bytes(4) + last_updated(8) + chunk_index(2) +
+       total_chunks(2) + data_length(2) = 18 bytes after packet header */
+    const int FIXED_HEADER_SIZE = 18;
+
+    /* First validate we have enough bytes to read the fixed header */
+    if (ret < (int)(sizeof(PacketHeader) + FIXED_HEADER_SIZE)) {
+      net_log("Stats pkt too small: %d < %d", ret,
+              (int)(sizeof(PacketHeader) + FIXED_HEADER_SIZE));
+      return 0; /* Invalid packet, don't claim we received it */
+    }
+
+    StatsResponsePacket *response =
+        (StatsResponsePacket *)(buffer + sizeof(PacketHeader));
+
+    /* Now we can safely read data_length and check total size */
+    int expected_size =
+        sizeof(PacketHeader) + FIXED_HEADER_SIZE + response->data_length;
+    if (ret < expected_size) {
+      net_log("Stats pkt incomplete: %d < %d", ret, expected_size);
+      return 0; /* Incomplete packet */
+    }
+
+    /* Packet is valid, process it */
+
+    /* First chunk - open file for writing */
+    if (response->chunk_index == 0 || !g_stats_stream.active) {
+      /* Close any previous file if still open */
+      if (g_stats_stream.fd >= 0) {
+        sceIoClose(g_stats_stream.fd);
+      }
+      /* Open file for writing (truncate) */
+      g_stats_stream.fd = sceIoOpen(
+          USAGE_LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+      g_stats_stream.total_bytes = response->total_bytes;
+      g_stats_stream.bytes_written = 0;
+      g_stats_stream.total_chunks = response->total_chunks;
+      g_stats_stream.received_chunks = 0;
+      g_stats_stream.last_updated = response->last_updated;
+      g_stats_stream.verified = 0;
+      g_stats_stream.active = (g_stats_stream.fd >= 0) ? 1 : 0;
+      net_log("Stats stream started: total_bytes=%u chunks=%u",
+              response->total_bytes, response->total_chunks);
+    }
+
+    /* Write chunk data directly to file */
+    if (g_stats_stream.fd >= 0 && response->data_length > 0 &&
+        response->chunk_index == g_stats_stream.received_chunks) {
+      int written = sceIoWrite(g_stats_stream.fd, response->json_data,
+                               response->data_length);
+      if (written > 0) {
+        g_stats_stream.bytes_written += written;
+      }
+      g_stats_stream.received_chunks++;
+    }
+
+    /* Last chunk - close file and verify */
+    if (g_stats_stream.received_chunks >= g_stats_stream.total_chunks &&
+        g_stats_stream.fd >= 0) {
+      sceIoClose(g_stats_stream.fd);
+      g_stats_stream.fd = -1;
+
+      /* Verify byte count matches */
+      if (g_stats_stream.bytes_written == g_stats_stream.total_bytes) {
+        g_stats_stream.verified = 1;
+        net_log("Stats verified: %u bytes", g_stats_stream.bytes_written);
+      } else {
+        /* Truncated - delete corrupt file */
+        g_stats_stream.verified = 0;
+        sceIoRemove(USAGE_LOG_PATH);
+        net_log("Stats TRUNCATED: got %u expected %u",
+                g_stats_stream.bytes_written, g_stats_stream.total_bytes);
+      }
+    }
+
+    return 3;
   }
 
   return 0;
@@ -752,4 +844,104 @@ int network_handle_discovery(PluginConfig *config) {
   }
 
   return 1;
+}
+
+/**
+ * Send stats request to desktop
+ */
+int network_send_stats_request(void) {
+  /* Stats request is just a header with type MSG_STATS_REQUEST, no payload */
+  return send_packet(MSG_STATS_REQUEST, NULL, 0);
+}
+
+/**
+ * Send local usage stats to desktop (chunked)
+ */
+int network_send_stats_upload(const char *json_data, size_t json_len,
+                              uint64_t last_updated) {
+  StatsUploadPacket packet;
+  uint16_t total_chunks;
+  uint16_t chunk_index;
+  size_t offset = 0;
+  int ret;
+
+  if (json_data == NULL || json_len == 0) {
+    return -1;
+  }
+
+  /* Calculate total chunks */
+  total_chunks = (json_len + STATS_CHUNK_SIZE - 1) / STATS_CHUNK_SIZE;
+
+  /* Send chunks */
+  for (chunk_index = 0; chunk_index < total_chunks; chunk_index++) {
+    memset(&packet, 0, sizeof(packet));
+    packet.last_updated = last_updated;
+    packet.chunk_index = chunk_index;
+    packet.total_chunks = total_chunks;
+
+    /* Calculate chunk size */
+    size_t remaining = json_len - offset;
+    packet.data_length =
+        (remaining > STATS_CHUNK_SIZE) ? STATS_CHUNK_SIZE : remaining;
+
+    memcpy(packet.json_data, json_data + offset, packet.data_length);
+    offset += packet.data_length;
+
+    /* Send only the header + actual data, not the full buffer */
+    size_t packet_size = sizeof(packet) - STATS_CHUNK_SIZE + packet.data_length;
+    ret = send_packet(MSG_STATS_UPLOAD, &packet, packet_size);
+    if (ret < 0) {
+      return ret;
+    }
+
+    /* Small delay between chunks */
+    sceKernelDelayThread(10 * 1000); /* 10ms */
+  }
+
+  return 0;
+}
+
+/**
+ * Check for stats response from desktop
+ * This function checks if streaming is complete
+ * Returns: 1 = complete verified, -2 = truncated, 0 = still receiving, -1 = no
+ * data
+ */
+int network_poll_stats_response(uint64_t *last_updated_out, char *json_buffer,
+                                size_t buffer_size,
+                                size_t *bytes_received_out) {
+  /* Unused now - data written directly to file */
+  (void)json_buffer;
+  (void)buffer_size;
+
+  /* Check if we have any data streaming */
+  if (!g_stats_stream.active && g_stats_stream.total_chunks == 0) {
+    return -1; /* No data received yet */
+  }
+
+  /* Check if complete (all chunks received) */
+  if (g_stats_stream.received_chunks >= g_stats_stream.total_chunks &&
+      g_stats_stream.total_chunks > 0) {
+    if (last_updated_out != NULL) {
+      *last_updated_out = g_stats_stream.last_updated;
+    }
+    if (bytes_received_out != NULL) {
+      *bytes_received_out = g_stats_stream.bytes_written;
+    }
+
+    int verified = g_stats_stream.verified;
+
+    /* Reset state */
+    g_stats_stream.active = 0;
+    g_stats_stream.total_chunks = 0;
+    g_stats_stream.received_chunks = 0;
+
+    if (verified) {
+      return 1; /* Complete and verified */
+    } else {
+      return -2; /* Truncated - file deleted */
+    }
+  }
+
+  return 0; /* Still receiving */
 }

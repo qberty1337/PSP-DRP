@@ -2,6 +2,7 @@
 /desktop-companion/target/
 **/*.rs.bk
 build_error.txt
+build_errors.txt
 build_output.txt
 Cargo.lock
 

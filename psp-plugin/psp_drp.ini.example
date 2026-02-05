@@ -23,6 +23,11 @@ send_once = 0
 ; Use with the PSP DRP Homebrew App to view play time stats without WiFi
 offline_mode = 0
 
+; USB mode - enables USB file sync with desktop companion (1 = enabled, 0 = disabled)
+; The desktop companion will auto-sync stats when PSP is connected via USB.
+; This allows Discord Rich Presence without WiFi - just keep PSP connected via USB cable.
+usb_mode = 0
+
 ; Send game icons to desktop app (1 = enabled, 0 = disabled)
 send_icons = 1
 

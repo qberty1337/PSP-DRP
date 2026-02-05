@@ -13,6 +13,9 @@
 
 #include "usage_tracker.h"
 
+/* External logging function from main.c */
+extern void net_log(const char *fmt, ...);
+
 /* Current session state */
 static struct {
   int active;
@@ -27,6 +30,9 @@ static int g_data_loaded = 0;
 
 /* Tick resolution (ticks per second) */
 static uint32_t g_tick_resolution = 1000000;
+
+/* PSP name for JSON output (set via usage_set_psp_name) */
+static char g_psp_name[32] = "PSP";
 
 /* Helper: safe string copy */
 static void copy_str(char *dst, size_t dst_size, const char *src) {
@@ -44,11 +50,23 @@ static void copy_str(char *dst, size_t dst_size, const char *src) {
   dst[len] = '\0';
 }
 
-/* Helper: get current tick count */
+/* Helper: get current tick count (microseconds) */
 static uint64_t get_tick(void) {
-  uint64_t tick;
-  sceRtcGetCurrentTick(&tick);
-  return tick;
+  SceKernelSysClock clock;
+  sceKernelGetSystemTime(&clock);
+  return clock.low + ((uint64_t)clock.hi << 32);
+}
+
+/* Helper: get current time as formatted string "YYYY-MM-DD HH:MM:SS" */
+static void get_current_time_string(char *buffer, size_t size) {
+  ScePspDateTime rtc_time;
+  if (sceRtcGetCurrentClockLocalTime(&rtc_time) >= 0) {
+    snprintf(buffer, size, "%04d-%02d-%02d %02d:%02d:%02d", rtc_time.year,
+             rtc_time.month, rtc_time.day, rtc_time.hour, rtc_time.minute,
+             rtc_time.second);
+  } else {
+    buffer[0] = '\0';
+  }
 }
 
 /* Helper: find or create game entry */
@@ -205,10 +223,21 @@ static void load_usage_json(void) {
  */
 void usage_init(void) {
   memset(&g_current_session, 0, sizeof(g_current_session));
-  g_tick_resolution = sceRtcGetTickResolution();
+  /* Tick resolution is 1000000 (microseconds) since we use
+   * sceKernelGetSystemTime */
+  g_tick_resolution = 1000000;
 
   if (!g_data_loaded) {
     load_usage_json();
+  }
+}
+
+/**
+ * Set PSP name for JSON output
+ */
+void usage_set_psp_name(const char *name) {
+  if (name && name[0] != '\0') {
+    copy_str(g_psp_name, sizeof(g_psp_name), name);
   }
 }
 
@@ -269,50 +298,81 @@ void usage_end_session(void) {
 
 /**
  * Save usage data to JSON file
+ * Format matches desktop companion:
+ * {"psps":{"PSP Name":{"psp_name":"PSP Name","games":{"GAMEID:1":{...}}}}}
  */
 void usage_save(void) {
   SceUID fd;
-  char buffer[4096];
+  static char
+      buffer[4096]; /* Static buffer - need more space for nested format */
   int len, i;
   int first_game = 1;
+  uint64_t elapsed_ticks;
+  uint64_t elapsed_seconds;
+  uint64_t current_session_seconds;
+  GameUsage *game;
+  const char *current_game_id;
+  uint64_t game_seconds;
+  uint32_t game_sessions;
+  char last_played_str[24]; /* "YYYY-MM-DD HH:MM:SS" */
 
-  /* End current session to capture time */
+  /* Get current time for last_played */
+  get_current_time_string(last_played_str, sizeof(last_played_str));
+
+  /* Calculate current session time (if active) */
+  current_session_seconds = 0;
+  current_game_id = NULL;
   if (g_current_session.active) {
-    /* Save session data but don't clear it */
-    uint64_t elapsed_ticks = get_tick() - g_current_session.start_tick;
-    uint64_t elapsed_seconds = elapsed_ticks / g_tick_resolution;
-
+    elapsed_ticks = get_tick() - g_current_session.start_tick;
+    elapsed_seconds = elapsed_ticks / g_tick_resolution;
     if (elapsed_seconds >= 1) {
-      GameUsage *game = find_or_create_game(g_current_session.game_id);
-      if (game) {
-        if (g_current_session.title[0] != '\0') {
-          copy_str(game->title, sizeof(game->title), g_current_session.title);
-        }
-        /* Don't add to totals yet - will be added when session ends */
+      current_session_seconds = elapsed_seconds;
+      current_game_id = g_current_session.game_id;
+
+      /* Make sure the game entry exists with title */
+      game = find_or_create_game(g_current_session.game_id);
+      if (game && g_current_session.title[0] != '\0') {
+        copy_str(game->title, sizeof(game->title), g_current_session.title);
       }
     }
   }
 
-  /* Build JSON */
+  /* Build JSON in desktop companion format */
   len = snprintf(buffer, sizeof(buffer),
-                 "{\"total_games\":%lu,\"total_playtime\":%llu,\"games\":[",
-                 (unsigned long)g_usage_data.total_games,
-                 (unsigned long long)g_usage_data.total_playtime);
+                 "{\"psps\":{\"%s\":{\"psp_name\":\"%s\",\"games\":{",
+                 g_psp_name, g_psp_name);
 
   for (i = 0;
-       i < (int)g_usage_data.total_games && len < (int)sizeof(buffer) - 200;
+       i < (int)g_usage_data.total_games && len < (int)sizeof(buffer) - 300;
        i++) {
-    GameUsage *game = &g_usage_data.games[i];
+    game = &g_usage_data.games[i];
+    game_seconds = game->total_seconds;
+    game_sessions = game->session_count;
+
+    /* Add current session time to the matching game */
+    if (current_game_id && strcmp(game->game_id, current_game_id) == 0) {
+      game_seconds += current_session_seconds;
+      game_sessions += 1; /* Count current session */
+    }
+
+    /* Key is "game_id:session_count" like desktop */
     len += snprintf(buffer + len, sizeof(buffer) - len,
-                    "%s{\"title\":\"%s\",\"game_id\":\"%s\",\"seconds\":%llu,"
-                    "\"sessions\":%lu}",
-                    first_game ? "" : ",", game->title, game->game_id,
-                    (unsigned long long)game->total_seconds,
-                    (unsigned long)game->session_count);
+                    "%s\"%s:%lu\":{\"game_id\":\"%s\",\"title\":\"%s\","
+                    "\"total_seconds\":%llu,\"first_played\":\"\","
+                    "\"last_played\":\"%s\",\"session_count\":%lu,"
+                    "\"play_dates\":[],\"daily_playtime\":{}}",
+                    first_game ? "" : ",", game->game_id,
+                    (unsigned long)game_sessions, game->game_id, game->title,
+                    (unsigned long long)game_seconds, last_played_str,
+                    (unsigned long)game_sessions);
     first_game = 0;
   }
 
-  len += snprintf(buffer + len, sizeof(buffer) - len, "]}");
+  len += snprintf(buffer + len, sizeof(buffer) - len,
+                  "}}},\"last_updated\":null}");
+
+  /* Small delay before file I/O to let XMB settle */
+  sceKernelDelayThread(10 * 1000); /* 10ms */
 
   /* Write to file */
   fd = sceIoOpen(USAGE_JSON_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC,
@@ -327,3 +387,51 @@ void usage_save(void) {
  * Check if there's an active session
  */
 int usage_has_active_session(void) { return g_current_session.active; }
+
+/**
+ * Get the last_updated timestamp
+ */
+uint64_t usage_get_last_updated(void) { return g_usage_data.last_updated; }
+
+/**
+ * Get pointer to the in-memory usage data
+ */
+const UsageData *usage_get_data(void) { return &g_usage_data; }
+
+/**
+ * Merge remote usage data into local (stub - not needed for basic offline)
+ */
+int usage_merge_remote(const char *json_data, size_t len) {
+  (void)json_data;
+  (void)len;
+  return 0;
+}
+
+/**
+ * Serialize usage data to JSON string
+ */
+int usage_serialize_json(char *buffer, size_t buffer_size) {
+  int len, i;
+  int first_game = 1;
+  GameUsage *game;
+
+  len = snprintf(buffer, buffer_size,
+                 "{\"total_games\":%lu,\"total_playtime\":%llu,\"games\":[",
+                 (unsigned long)g_usage_data.total_games,
+                 (unsigned long long)g_usage_data.total_playtime);
+
+  for (i = 0; i < (int)g_usage_data.total_games && len < (int)buffer_size - 200;
+       i++) {
+    game = &g_usage_data.games[i];
+    len += snprintf(buffer + len, buffer_size - len,
+                    "%s{\"title\":\"%s\",\"game_id\":\"%s\",\"seconds\":%llu,"
+                    "\"sessions\":%lu}",
+                    first_game ? "" : ",", game->title, game->game_id,
+                    (unsigned long long)game->total_seconds,
+                    (unsigned long)game->session_count);
+    first_game = 0;
+  }
+
+  len += snprintf(buffer + len, buffer_size - len, "]}");
+  return len;
+}

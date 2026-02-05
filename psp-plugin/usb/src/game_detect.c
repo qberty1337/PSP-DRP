@@ -11,7 +11,8 @@
 #include <string.h>
 
 #include "game_detect.h"
-#include "network.h"
+/* Disable net_log for kernel module - network.h unavailable */
+#define net_log(...) ((void)0)
 #include "sfo.h"
 
 /* Path to running game's directory */
@@ -618,11 +619,6 @@ static int detect_module_game(GameInfo *info) {
  */
 static uint8_t determine_state(const char *game_id) {
   if (game_id == NULL || game_id[0] == '\0') {
-    return STATE_XMB;
-  }
-
-  /* SystemControl/SystemCon is a CFW module, treat as XMB */
-  if (strncmp(game_id, "SystemCon", 9) == 0) {
     return STATE_XMB;
   }
 

@@ -37,6 +37,7 @@ void config_set_defaults(PluginConfig *config) {
   config->enable_logging = 0;
   config->vblank_wait = 300; /* Default: ~5 seconds at 60fps */
   config->offline_mode = 0;  /* Default: online mode */
+  /* NOTE: USB mode is handled by loader (USB_MODE in psp_drp.ini) */
 }
 
 /**
@@ -261,6 +262,7 @@ static void parse_line(const char *line, PluginConfig *config) {
   } else if (strcmp(key, "offline_mode") == 0) {
     config->offline_mode = parse_bool(value);
   }
+  /* NOTE: usb_mode is parsed by the loader, not the net plugin */
 }
 
 /**

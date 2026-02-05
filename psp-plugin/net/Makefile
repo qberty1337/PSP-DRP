@@ -13,8 +13,10 @@ ASFLAGS = $(CFLAGS)
 
 LIBDIR =
 LDFLAGS =
+# USB functionality moved to separate kernel PRX (psp_drp_usb.prx)
+# -lpspusb is needed for sceUsbGetState to check connection status
 LIBS = -lpspnet_inet -lpspnet_apctl -lpspnet_resolver -lpspnet \
-       -lpspwlan -lpsputility -lpsppower -lpspumd -lpsprtc \
+       -lpspwlan -lpsputility -lpsppower -lpspumd -lpsprtc -lpspusb \
        -lpspuser -lc -lgcc
 
 PSPSDK = $(shell psp-config --pspsdk-path)

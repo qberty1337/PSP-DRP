@@ -8,6 +8,7 @@
 #include <pspnet.h>
 #include <pspnet_apctl.h>
 #include <pspnet_inet.h>
+#include <pspusb.h>
 #include <psputility.h>
 #include <pspwlan.h>
 #include <stdarg.h>
@@ -20,6 +21,16 @@
 #include "game_detect.h"
 #include "network.h"
 #include "usage_tracker.h"
+
+/*============================================================================
+ * USB Kernel PRX Dynamic Loading
+ * USB functionality is in separate kernel PRX (psp_drp_usb.prx)
+ * Functions are linked via stub library (psp_drp_usb.S)
+ *============================================================================*/
+
+/* NOTE: USB mode is now handled directly by the loader.
+ * The loader loads the USB plugin instead of the NET plugin when USB_MODE=1.
+ */
 
 /**
  * Games that CANNOT use vblank wait (display system conflicts).
@@ -82,6 +93,8 @@ typedef struct {
   unsigned int magic;
   int profile_id;
   unsigned int flags;
+  char game_id[16];
+  char game_title[64];
 } RpcStartArgs;
 
 /* Plugin configuration */
@@ -104,6 +117,10 @@ static volatile int g_running = 1;
 static int g_profile_id = 1;
 static int g_started_from_ui = 0;
 
+/* Game info from loader (no need to poll) */
+static char g_startup_game_id[16] = {0};
+static char g_startup_game_title[64] = {0};
+
 /* Mode label for logs */
 static const char *g_mode_label = "UNK";
 
@@ -119,6 +136,12 @@ static SceUInt64 g_connect_start_us = 0;
 #define ICON_BUFFER_SIZE (256 * 1024)
 static uint8_t g_icon_buffer[ICON_BUFFER_SIZE];
 static char g_last_icon_id[10] = {0};
+
+/* Stats sync state */
+static int g_stats_sync_pending = 0;    /* 1 = waiting for response */
+static int g_stats_sync_done = 0;       /* 1 = initial sync complete */
+static SceUInt64 g_last_stats_sync = 0; /* Last sync attempt time */
+#define STATS_SYNC_INTERVAL_US (5 * 60 * 1000 * 1000ULL) /* 5 minutes */
 
 #define HEARTBEAT_INTERVAL_US (30 * 1000 * 1000) /* 30 seconds */
 #define GAME_CHECK_INTERVAL_US (2 * 1000 * 1000) /* 2 seconds */
@@ -184,6 +207,44 @@ static void wait_for_vblanks(int count) {
   }
 }
 
+/**
+ * Get current game info from loader (NO game detection).
+ * The loader provides game info - this plugin should never do its own
+ * detection. Returns 0 on success, -1 if no game info available.
+ */
+static int get_game_info(GameInfo *info) {
+  memset(info, 0, sizeof(GameInfo));
+
+  /* Only use startup info from loader - no fallback to detection */
+  if (g_startup_game_id[0] != '\0') {
+    strncpy(info->game_id, g_startup_game_id, sizeof(info->game_id) - 1);
+    info->game_id[sizeof(info->game_id) - 1] = '\0';
+
+    if (g_startup_game_title[0] != '\0') {
+      strncpy(info->title, g_startup_game_title, sizeof(info->title) - 1);
+    } else {
+      strncpy(info->title, g_startup_game_id, sizeof(info->title) - 1);
+    }
+    info->title[sizeof(info->title) - 1] = '\0';
+
+    /* Set default state based on simple heuristics */
+    if (strncmp(info->game_id, "SystemCon", 9) == 0 ||
+        strncmp(info->game_id, "Xmb", 3) == 0 ||
+        strcmp(info->game_id, "XMB") == 0) {
+      info->state = STATE_XMB;
+    } else {
+      info->state = STATE_GAME;
+    }
+    info->start_time = 0; /* Will be set by usage code */
+    info->has_icon = 1;   /* Assume icon exists */
+
+    return 0;
+  }
+
+  /* No game info from loader - return error (caller should handle) */
+  return -1;
+}
+
 static int plugin_thread(SceSize args, void *argp) {
   (void)args;
   (void)argp;
@@ -215,14 +276,17 @@ static int plugin_thread(SceSize args, void *argp) {
     return 0;
   }
 
+  /* NOTE: USB mode is handled by the loader (loads USB plugin directly).
+   * This net plugin only handles offline mode and WiFi network mode. */
+
   /* Offline mode: track usage locally, no network */
   if (g_config.offline_mode) {
     net_log("=== OFFLINE MODE ===");
-    game_detect_init();
+    usage_set_psp_name(g_config.psp_name);
     usage_init();
 
-    /* Initial game detection */
-    if (game_detect_current(&new_game) == 0 && new_game.game_id[0] != '\0') {
+    /* Get initial game info from loader - if not available, assume XMB */
+    if (get_game_info(&new_game) == 0 && new_game.game_id[0] != '\0') {
       memcpy(&g_current_game, &new_game, sizeof(GameInfo));
       /* Rename XMB module to friendly name */
       if (strncmp(g_current_game.game_id, "Xmb", 3) == 0 ||
@@ -230,36 +294,18 @@ static int plugin_thread(SceSize args, void *argp) {
         strcpy(g_current_game.game_id, "XMB");
         strcpy(g_current_game.title, "Browsing XMB");
       }
-      usage_start_session(g_current_game.game_id, g_current_game.title);
-      net_log("Started tracking: %s", g_current_game.title);
+    } else {
+      /* No game info from loader - assume XMB in offline mode */
+      strcpy(g_current_game.game_id, "XMB");
+      strcpy(g_current_game.title, "Browsing XMB");
+      g_current_game.state = STATE_XMB;
     }
+    usage_start_session(g_current_game.game_id, g_current_game.title);
+    net_log("Started tracking: %s", g_current_game.title);
 
-    /* Main loop - just track game changes */
+    /* Simple loop - just save usage periodically, no game polling */
     while (g_running) {
-      SceUInt64 poll_interval = (SceUInt64)g_config.poll_interval_ms * 1000;
-      if (poll_interval < 500000)
-        poll_interval = 500000;
-
       now = get_time_us();
-      if (now - g_last_game_check >= poll_interval) {
-        g_last_game_check = now;
-        if (game_detect_current(&new_game) == 0) {
-          /* Rename XMB module to friendly name BEFORE comparison */
-          if (strncmp(new_game.game_id, "Xmb", 3) == 0 ||
-              strcmp(new_game.game_id, "XMB") == 0) {
-            strcpy(new_game.game_id, "XMB");
-            strcpy(new_game.title, "Browsing XMB");
-          }
-          if (strcmp(new_game.game_id, g_current_game.game_id) != 0) {
-            /* Game changed - end old session, start new */
-            usage_end_session();
-            usage_save();
-            memcpy(&g_current_game, &new_game, sizeof(GameInfo));
-            usage_start_session(g_current_game.game_id, g_current_game.title);
-            net_log("Game changed to: %s", g_current_game.title);
-          }
-        }
-      }
 
       /* Save periodically (every 30 seconds) */
       if (now - g_last_heartbeat >= 30 * 1000 * 1000) {
@@ -267,7 +313,7 @@ static int plugin_thread(SceSize args, void *argp) {
         usage_save();
       }
 
-      sceKernelDelayThread(100 * 1000);
+      sceKernelDelayThread(1000 * 1000); /* Sleep 1 second */
     }
 
     /* Cleanup - save final usage */
@@ -277,7 +323,10 @@ static int plugin_thread(SceSize args, void *argp) {
     return 0;
   }
 
+  /* WiFi mode continues below */
+
   game_detect_init();
+  usage_init(); /* Initialize usage tracker for WiFi mode too */
 
   net_log("=== DEBUG: Starting game detection ===");
 
@@ -416,6 +465,11 @@ static int plugin_thread(SceSize args, void *argp) {
         g_waiting_for_ack = 0;
         g_connect_start_us = 0;
         net_log("Discovered %s:%d", g_config.desktop_ip, g_config.port);
+
+        /* Trigger initial stats sync on connection */
+        g_stats_sync_pending = 0;
+        g_stats_sync_done = 0;
+        g_last_stats_sync = 0;
       }
     }
 
@@ -429,7 +483,15 @@ static int plugin_thread(SceSize args, void *argp) {
         g_connected = 1;
         g_waiting_for_ack = 0;
         g_connect_start_us = 0;
-        net_log("Desktop ACK received");
+        net_log("Desktop ACK received (sync_pending=%d)", g_stats_sync_pending);
+
+        /* Trigger initial stats sync on connection (only if not already
+         * syncing) */
+        if (!g_stats_sync_pending) {
+          g_stats_sync_done = 0;
+          g_last_stats_sync = 0;
+          net_log("Stats state reset for initial sync");
+        }
       } else if (msg_result == 2 && g_connected && g_config.send_icons) {
         /* Icon request received */
         net_log("Icon requested for: %s", requested_game_id);
@@ -445,6 +507,52 @@ static int plugin_thread(SceSize args, void *argp) {
           }
         } else {
           net_log("Icon load failed for request: %d", icon_res);
+        }
+      }
+
+      /* Handle stats sync response (msg_result == 3) */
+      if (msg_result == 3 && g_stats_sync_pending) {
+        /* Stats response received - check if streaming is complete */
+        uint64_t remote_last_updated = 0;
+        size_t bytes_received = 0;
+
+        int resp = network_poll_stats_response(&remote_last_updated, NULL, 0,
+                                               &bytes_received);
+        if (resp == 1) {
+          /* Complete and verified - data already written to file by network
+           * layer */
+          net_log("Stats sync complete, %u bytes received",
+                  (unsigned int)bytes_received);
+
+          /* Check if we need to upload local data instead */
+          uint64_t local_last_updated = usage_get_last_updated();
+          if (local_last_updated > remote_last_updated) {
+            /* Local is newer - upload our data */
+            net_log("Local data is newer, uploading");
+            char local_json[4096];
+            int local_len =
+                usage_serialize_json(local_json, sizeof(local_json));
+            if (local_len > 0) {
+              network_send_stats_upload(local_json, (size_t)local_len,
+                                        local_last_updated);
+            }
+          }
+
+          g_stats_sync_pending = 0;
+          g_stats_sync_done = 1;
+          g_last_stats_sync = now;
+        } else if (resp == -2) {
+          /* Truncated - file was deleted, will retry */
+          net_log("Stats sync FAILED - data truncated, will retry");
+          g_stats_sync_pending = 0;
+          /* Don't set g_stats_sync_done so it will retry next interval */
+        } else if (resp == 0) {
+          /* Still receiving chunks */
+        } else {
+          /* Other error */
+          net_log("Stats response error: %d", resp);
+          g_stats_sync_pending = 0;
+          g_stats_sync_done = 1; /* Mark done to prevent immediate retry */
         }
       }
     }
@@ -587,6 +695,42 @@ static int plugin_thread(SceSize args, void *argp) {
           }
         }
       }
+
+      /* Stats sync logic */
+      if (!g_stats_sync_pending) {
+        int should_sync = 0;
+
+        /* Initial sync on connect */
+        if (!g_stats_sync_done && g_last_stats_sync == 0) {
+          should_sync = 1;
+          net_log("Triggering initial stats sync");
+        }
+        /* Periodic sync */
+        else if (g_stats_sync_done &&
+                 (now - g_last_stats_sync >= STATS_SYNC_INTERVAL_US)) {
+          should_sync = 1;
+          net_log("Triggering periodic stats sync");
+        }
+
+        if (should_sync) {
+          int ret = network_send_stats_request();
+          if (ret >= 0) {
+            /* ret > 0 means bytes sent successfully */
+            g_stats_sync_pending = 1;
+            g_last_stats_sync = now;
+            net_log("Stats request sent (%d bytes)", ret);
+          } else {
+            net_log("Stats request failed: %d", ret);
+          }
+        }
+      } else {
+        /* Sync is pending - check for timeout (30 seconds) */
+        if ((now - g_last_stats_sync) > (30 * 1000 * 1000ULL)) {
+          net_log("Stats sync timeout, giving up");
+          g_stats_sync_pending = 0;
+          g_stats_sync_done = 1; /* Mark done to prevent immediate retry */
+        }
+      }
     }
 
     sceKernelDelayThread(100 * 1000);
@@ -599,6 +743,10 @@ int module_start(SceSize args, void *argp) {
   (void)args;
   (void)argp;
 
+  /* Initialize game info globals */
+  g_startup_game_id[0] = '\0';
+  g_startup_game_title[0] = '\0';
+
   if (argp != NULL && args >= (SceSize)sizeof(RpcStartArgs)) {
     RpcStartArgs *start = (RpcStartArgs *)argp;
     if (start->magic == RPC_START_MAGIC) {
@@ -606,6 +754,18 @@ int module_start(SceSize args, void *argp) {
         g_profile_id = start->profile_id;
       }
       g_started_from_ui = (start->flags & RPC_START_FLAG_FROM_UI) ? 1 : 0;
+
+      /* Receive game info from loader */
+      if (start->game_id[0] != '\0') {
+        strncpy(g_startup_game_id, start->game_id,
+                sizeof(g_startup_game_id) - 1);
+        g_startup_game_id[sizeof(g_startup_game_id) - 1] = '\0';
+      }
+      if (start->game_title[0] != '\0') {
+        strncpy(g_startup_game_title, start->game_title,
+                sizeof(g_startup_game_title) - 1);
+        g_startup_game_title[sizeof(g_startup_game_title) - 1] = '\0';
+      }
     }
   }
 
@@ -617,10 +777,15 @@ int module_start(SceSize args, void *argp) {
   }
 
   net_log("module_start called");
+  net_log("BUILD: FEB04-1821 FIX_C89_DECL");
   if (argp != NULL && args >= (SceSize)sizeof(RpcStartArgs)) {
     RpcStartArgs *start = (RpcStartArgs *)argp;
     if (start->magic == RPC_START_MAGIC) {
       net_log("Start args profile=%d flags=0x%X", g_profile_id, start->flags);
+      if (g_startup_game_id[0] != '\0') {
+        net_log("Received game: %s", g_startup_game_id);
+        net_log("Title: %s", g_startup_game_title);
+      }
     }
   }
 
