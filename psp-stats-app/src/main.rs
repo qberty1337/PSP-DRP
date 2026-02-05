@@ -81,6 +81,10 @@ struct AppState {
     scroll_offset: usize,
     should_exit: bool,
     status_message: String,
+    /// Selector mode: shows all games (including hidden) and allows toggling hide status
+    selector_mode: bool,
+    /// Currently selected game index (in filtered list)
+    selected_index: usize,
 }
 
 impl AppState {
@@ -90,6 +94,8 @@ impl AppState {
             scroll_offset: 0,
             should_exit: false,
             status_message: String::new(),
+            selector_mode: false,
+            selected_index: 0,
         }
     }
     
@@ -100,12 +106,84 @@ impl AppState {
     }
     
     fn scroll_down(&mut self) {
-        let max_scroll = self.stats.games.len().saturating_sub(5);
+        let visible_count = self.get_visible_game_count();
+        let max_scroll = visible_count.saturating_sub(5);
         if self.scroll_offset < max_scroll {
             self.scroll_offset += 1;
         }
     }
+    
+    /// Move selection up
+    fn select_up(&mut self) {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+            // Scroll if needed to keep selection visible
+            if self.selected_index < self.scroll_offset {
+                self.scroll_offset = self.selected_index;
+            }
+        }
+    }
+    
+    /// Move selection down
+    fn select_down(&mut self) {
+        let visible_count = self.get_visible_game_count();
+        if self.selected_index + 1 < visible_count {
+            self.selected_index += 1;
+            // Scroll if needed to keep selection visible (assuming ~5 visible rows)
+            if self.selected_index >= self.scroll_offset + 5 {
+                self.scroll_offset = self.selected_index.saturating_sub(4);
+            }
+        }
+    }
+    
+    /// Toggle selector mode
+    fn toggle_selector_mode(&mut self) {
+        self.selector_mode = !self.selector_mode;
+        if self.selector_mode {
+            // When entering selector mode, reset selection to current scroll position
+            self.selected_index = self.scroll_offset;
+        }
+    }
+    
+    /// Get count of visible games (all in selector mode, non-hidden otherwise)
+    fn get_visible_game_count(&self) -> usize {
+        if self.selector_mode {
+            self.stats.games.len()
+        } else {
+            self.stats.games.iter().filter(|g| !g.hidden).count()
+        }
+    }
+    
+    /// Get the game at the selected index (in the visible list)
+    fn get_selected_game(&self) -> Option<&crate::stats::GameStats> {
+        if self.selector_mode {
+            self.stats.games.get(self.selected_index)
+        } else {
+            self.stats.games.iter()
+                .filter(|g| !g.hidden)
+                .nth(self.selected_index)
+        }
+    }
+    
+    /// Toggle hidden status for the selected game
+    fn toggle_selected_hidden(&mut self) -> bool {
+        if !self.selector_mode {
+            return false;
+        }
+        
+        if let Some(game) = self.stats.games.get_mut(self.selected_index) {
+            let new_hidden = !game.hidden;
+            let game_key = game.game_key.clone();
+            game.hidden = new_hidden;
+            
+            // Update the JSON file
+            crate::config::update_game_hidden(&game_key, new_hidden)
+        } else {
+            false
+        }
+    }
 }
+
 
 /// Load stats: try network if IP configured, fall back to cache or sample
 /// After network fetch, saves to local cache and shuts down WiFi
@@ -262,25 +340,56 @@ fn load_stats() -> (StatsData, DataSource) {
     result
 }
 
-/// Handle D-pad input for scrolling
+/// Handle D-pad input for scrolling and selector mode
 fn handle_input(state: &mut AppState) {
     unsafe {
         // Read controller state
         let mut pad_data: psp::sys::SceCtrlData = core::mem::zeroed();
         psp::sys::sceCtrlReadBufferPositive(&mut pad_data, 1);
         
-        // Check for button presses using contains() for bitflags
-        if pad_data.buttons.contains(psp::sys::CtrlButtons::UP) {
-            state.scroll_up();
+        // Square button - toggle selector mode
+        if pad_data.buttons.contains(psp::sys::CtrlButtons::SQUARE) {
+            state.toggle_selector_mode();
         }
-        if pad_data.buttons.contains(psp::sys::CtrlButtons::DOWN) {
-            state.scroll_down();
+        
+        // In selector mode, use different navigation
+        if state.selector_mode {
+            // X button - toggle hidden status on selected entry
+            if pad_data.buttons.contains(psp::sys::CtrlButtons::CROSS) {
+                if state.toggle_selected_hidden() {
+                    // Update status message
+                    if let Some(game) = state.get_selected_game() {
+                        state.status_message = if game.hidden {
+                            format!("Hidden: {}", game.title)
+                        } else {
+                            format!("Shown: {}", game.title)
+                        };
+                    }
+                }
+            }
+            
+            // D-pad navigates selection in selector mode
+            if pad_data.buttons.contains(psp::sys::CtrlButtons::UP) {
+                state.select_up();
+            }
+            if pad_data.buttons.contains(psp::sys::CtrlButtons::DOWN) {
+                state.select_down();
+            }
+        } else {
+            // Normal mode: D-pad scrolls
+            if pad_data.buttons.contains(psp::sys::CtrlButtons::UP) {
+                state.scroll_up();
+            }
+            if pad_data.buttons.contains(psp::sys::CtrlButtons::DOWN) {
+                state.scroll_down();
+            }
         }
         
         // Simple debounce - wait a bit between inputs
         psp::sys::sceKernelDelayThread(100_000); // 100ms
     }
 }
+
 
 fn psp_main() {
     psp::enable_home_button();
@@ -325,7 +434,8 @@ fn psp_main() {
     loop {
         // Render UI
         terminal.draw(|frame| {
-            ui::render_stats(frame, &app_state.stats, app_state.scroll_offset);
+            ui::render_stats(frame, &app_state.stats, app_state.scroll_offset, 
+                app_state.selector_mode, app_state.selected_index);
         }).unwrap();
         
         // Handle input

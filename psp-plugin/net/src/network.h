@@ -108,4 +108,36 @@ int network_poll_icon_request(char *game_id_out);
  */
 void network_force_cleanup(void);
 
+/**
+ * Send stats request to desktop
+ * This asks the desktop for its usage data and last_updated timestamp
+ *
+ * @return 0 on success, negative on error
+ */
+int network_send_stats_request(void);
+
+/**
+ * Send local usage stats to desktop (chunked)
+ *
+ * @param json_data Serialized usage data JSON
+ * @param json_len Length of JSON data
+ * @param last_updated Local last_updated timestamp
+ * @return 0 on success, negative on error
+ */
+int network_send_stats_upload(const char *json_data, size_t json_len,
+                              uint64_t last_updated);
+
+/**
+ * Check for stats response from desktop
+ * Call this after sending stats request to receive desktop's data
+ *
+ * @param last_updated_out Receives desktop's last_updated timestamp
+ * @param json_buffer Buffer to receive JSON data (accumulated across chunks)
+ * @param buffer_size Size of json_buffer
+ * @param bytes_received_out Receives total bytes written to json_buffer
+ * @return 1 if complete response received, 0 if partial/none, negative on error
+ */
+int network_poll_stats_response(uint64_t *last_updated_out, char *json_buffer,
+                                size_t buffer_size, size_t *bytes_received_out);
+
 #endif /* NETWORK_H */

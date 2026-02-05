@@ -19,13 +19,20 @@ use ratatui::{
 use crate::stats::{format_duration, format_duration_short, StatsData};
 
 /// Main stats rendering function
-pub fn render_stats(frame: &mut Frame, stats: &StatsData, scroll_offset: usize) {
+pub fn render_stats(frame: &mut Frame, stats: &StatsData, scroll_offset: usize, 
+                    selector_mode: bool, selected_index: usize) {
     let area = frame.area();
     
-    // Create outer border
+    // Create outer border - highlight in selector mode
+    let border_color = if selector_mode {
+        Color::Rgb(100, 100, 200) // Brighter blue border in selector mode
+    } else {
+        Color::Rgb(60, 60, 80)
+    };
+    
     let outer_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(60, 60, 80)))
+        .border_style(Style::default().fg(border_color))
         .style(Style::default().bg(Color::Rgb(15, 15, 25)));
     
     frame.render_widget(outer_block.clone(), area);
@@ -42,25 +49,42 @@ pub fn render_stats(frame: &mut Frame, stats: &StatsData, scroll_offset: usize) 
         ])
         .split(inner_area);
     
-    render_header(frame, chunks[0], stats);
-    render_bar_graph(frame, chunks[1], stats);
-    render_game_list(frame, chunks[2], stats, scroll_offset);
-    render_footer(frame, chunks[3]);
+    render_header(frame, chunks[0], stats, selector_mode);
+    render_bar_graph(frame, chunks[1], stats, selector_mode);
+    render_game_list(frame, chunks[2], stats, scroll_offset, selector_mode, selected_index);
+    render_footer(frame, chunks[3], selector_mode);
 }
 
 /// Render stats header with summary info
-fn render_header(frame: &mut Frame, area: Rect, stats: &StatsData) {
-    let header_content = Line::from(vec![
-        Span::styled(" # ", Style::default().fg(Color::Magenta)),
-        Span::styled("GAME STATISTICS", Style::default().fg(Color::White).bold()),
-        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} games", stats.games.len()), Style::default().fg(Color::Cyan)),
-        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} sessions", stats.total_sessions), Style::default().fg(Color::Yellow)),
-        Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Total: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format_duration(stats.total_playtime), Style::default().fg(Color::Green).bold()),
-    ]);
+fn render_header(frame: &mut Frame, area: Rect, stats: &StatsData, selector_mode: bool) {
+    let visible_games: usize = if selector_mode {
+        stats.games.len()
+    } else {
+        stats.games.iter().filter(|g| !g.hidden).count()
+    };
+    let hidden_count = stats.games.iter().filter(|g| g.hidden).count();
+    
+    let header_content = if selector_mode {
+        Line::from(vec![
+            Span::styled(" [SELECTOR MODE] ", Style::default().fg(Color::Black).bg(Color::Yellow).bold()),
+            Span::styled("  ", Style::default()),
+            Span::styled(format!("{} games", stats.games.len()), Style::default().fg(Color::Cyan)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} hidden", hidden_count), Style::default().fg(Color::Red)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" # ", Style::default().fg(Color::Magenta)),
+            Span::styled("GAME STATISTICS", Style::default().fg(Color::White).bold()),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} games", visible_games), Style::default().fg(Color::Cyan)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} sessions", stats.total_sessions), Style::default().fg(Color::Yellow)),
+            Span::styled("  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Total: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format_duration(stats.total_playtime), Style::default().fg(Color::Green).bold()),
+        ])
+    };
 
     let header = Paragraph::new(header_content)
         .block(
@@ -74,7 +98,7 @@ fn render_header(frame: &mut Frame, area: Rect, stats: &StatsData) {
 }
 
 /// Render horizontal bar graph of top games
-fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
+fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData, selector_mode: bool) {
     let block = Block::default()
         .title(Span::styled(" Top Games ", Style::default().fg(Color::Yellow).bold()))
         .title_alignment(Alignment::Left)
@@ -84,7 +108,14 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if stats.games.is_empty() {
+    // Filter games based on mode
+    let visible_games: Vec<_> = if selector_mode {
+        stats.games.iter().collect()
+    } else {
+        stats.games.iter().filter(|g| !g.hidden).collect()
+    };
+
+    if visible_games.is_empty() {
         let empty_msg = Paragraph::new(Span::styled("No data", Style::default().fg(Color::DarkGray).italic()))
             .alignment(Alignment::Center);
         frame.render_widget(empty_msg, inner);
@@ -98,7 +129,7 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
     let bar_area_width = inner.width.saturating_sub(title_width as u16 + 6) as usize;
 
     // Get max playtime for scaling
-    let max_seconds = stats.games.iter()
+    let max_seconds = visible_games.iter()
         .map(|g| g.total_seconds)
         .max()
         .unwrap_or(1)
@@ -113,16 +144,23 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
         Color::Blue,
     ];
 
-    let lines: Vec<Line> = stats.games.iter()
+    let lines: Vec<Line> = visible_games.iter()
         .take(inner.height as usize)
         .enumerate()
         .map(|(i, game)| {
             // Truncate title if needed
-            let title = if game.title.chars().count() > title_width {
+            let display_title = if game.title.chars().count() > title_width {
                 let truncated: String = game.title.chars().take(title_width - 2).collect();
                 format!("{}..", truncated)
             } else {
                 format!("{:<width$}", game.title, width = title_width)
+            };
+            
+            // Add hidden indicator
+            let title = if game.hidden {
+                format!("[H] {}", &display_title[..display_title.len().saturating_sub(4)])
+            } else {
+                display_title
             };
 
             // Calculate bar length
@@ -135,10 +173,14 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
             // Format time
             let time = format_duration_short(game.total_seconds);
 
-            let color = bar_colors[i % bar_colors.len()];
+            let color = if game.hidden {
+                Color::DarkGray  // Dim color for hidden games
+            } else {
+                bar_colors[i % bar_colors.len()]
+            };
             
             Line::from(vec![
-                Span::styled(title, Style::default().fg(Color::White)),
+                Span::styled(title, Style::default().fg(if game.hidden { Color::DarkGray } else { Color::White })),
                 Span::styled(" ", Style::default()),
                 Span::styled(bar, Style::default().fg(color)),
                 Span::styled(format!(" {}", time), Style::default().fg(Color::DarkGray)),
@@ -151,9 +193,16 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, stats: &StatsData) {
 }
 
 /// Render the scrollable game list
-fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_offset: usize) {
+fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_offset: usize,
+                    selector_mode: bool, selected_index: usize) {
+    let title = if selector_mode {
+        " Select Game (X to toggle hide) "
+    } else {
+        " All Games "
+    };
+    
     let block = Block::default()
-        .title(Span::styled(" All Games ", Style::default().fg(Color::Cyan).bold()))
+        .title(Span::styled(title, Style::default().fg(Color::Cyan).bold()))
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(50, 50, 70)));
@@ -161,7 +210,14 @@ fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_off
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    if stats.games.is_empty() {
+    // Filter games based on mode
+    let visible_games: Vec<(usize, &crate::stats::GameStats)> = if selector_mode {
+        stats.games.iter().enumerate().collect()
+    } else {
+        stats.games.iter().enumerate().filter(|(_, g)| !g.hidden).collect()
+    };
+
+    if visible_games.is_empty() {
         let empty_msg = Paragraph::new(Text::from(vec![
             Line::from(""),
             Line::from(Span::styled("No games played yet!", Style::default().fg(Color::DarkGray).italic())),
@@ -176,22 +232,31 @@ fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_off
     let rank_width = 4;       // "#1. "
     let playtime_width = 10;  // "999h 59m"
     let sessions_width = 10;  // "(99 plays)"
-    let fixed_width = rank_width + playtime_width + sessions_width + 4;
+    let hidden_width = if selector_mode { 4 } else { 0 };  // "[H] " in selector mode
+    let fixed_width = rank_width + playtime_width + sessions_width + hidden_width + 4;
     let title_width = available_width.saturating_sub(fixed_width).max(10);
 
     // Create list items
-    let items: Vec<ListItem> = stats.games
+    let items: Vec<ListItem> = visible_games
         .iter()
         .enumerate()
         .skip(scroll_offset)
         .take(inner.height as usize)
-        .map(|(i, game)| {
-            let rank = i + 1;
-            let rank_color = match rank {
-                1 => Color::Yellow,     // Gold
-                2 => Color::Gray,       // Silver  
-                3 => Color::Rgb(205, 127, 50), // Bronze
-                _ => Color::DarkGray,
+        .map(|(display_idx, (original_idx, game))| {
+            let rank = display_idx + 1;
+            
+            // Check if this is the selected item
+            let is_selected = selector_mode && *original_idx == selected_index;
+            
+            let rank_color = if is_selected {
+                Color::White
+            } else {
+                match rank {
+                    1 => Color::Yellow,     // Gold
+                    2 => Color::Gray,       // Silver  
+                    3 => Color::Rgb(205, 127, 50), // Bronze
+                    _ => Color::DarkGray,
+                }
             };
 
             // Truncate title if needed
@@ -211,14 +276,32 @@ fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_off
                 if game.session_count == 1 { "play" } else { "plays" }
             );
 
+            // Build content with optional hidden indicator and selection highlight
+            let title_style = if is_selected {
+                Style::default().fg(Color::Black).bg(Color::Yellow).bold()
+            } else if game.hidden {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().fg(Color::White).bold()
+            };
+            
+            let hidden_indicator = if selector_mode && game.hidden {
+                Span::styled("[H]", Style::default().fg(Color::Red))
+            } else if selector_mode {
+                Span::styled("   ", Style::default())
+            } else {
+                Span::styled("", Style::default())
+            };
+
             let content = Line::from(vec![
                 Span::styled(format!("{:>2}.", rank), Style::default().fg(rank_color)),
+                hidden_indicator,
                 Span::styled(" ", Style::default()),
-                Span::styled(format!("{:<width$}", display_title, width = title_width), Style::default().fg(Color::White).bold()),
+                Span::styled(format!("{:<width$}", display_title, width = title_width), title_style),
                 Span::styled(" ", Style::default()),
-                Span::styled(format!("{:>10}", playtime), Style::default().fg(Color::Green)),
+                Span::styled(format!("{:>10}", playtime), Style::default().fg(if game.hidden { Color::DarkGray } else { Color::Green })),
                 Span::styled(" ", Style::default()),
-                Span::styled(sessions, Style::default().fg(Color::Cyan)),
+                Span::styled(sessions, Style::default().fg(if game.hidden { Color::DarkGray } else { Color::Cyan })),
             ]);
             ListItem::new(content)
         })
@@ -229,19 +312,36 @@ fn render_game_list(frame: &mut Frame, area: Rect, stats: &StatsData, scroll_off
 }
 
 /// Render footer with controls
-fn render_footer(frame: &mut Frame, area: Rect) {
+fn render_footer(frame: &mut Frame, area: Rect, selector_mode: bool) {
     let version = env!("CARGO_PKG_VERSION");
-    let footer_content = Line::from(vec![
-        Span::styled(" ", Style::default()),
-        Span::styled("HOME", Style::default().fg(Color::Yellow).bold()),
-        Span::styled(" to exit ", Style::default().fg(Color::DarkGray)),
-        Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
-        Span::styled(" ", Style::default()),
-        Span::styled("UP/DOWN", Style::default().fg(Color::Yellow).bold()),
-        Span::styled(" to scroll ", Style::default().fg(Color::DarkGray)),
-        Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
-        Span::styled(format!(" PSP DRP v{}", version), Style::default().fg(Color::Cyan)),
-    ]);
+    
+    let footer_content = if selector_mode {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("X", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" toggle hide ", Style::default().fg(Color::DarkGray)),
+            Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+            Span::styled(" ", Style::default()),
+            Span::styled("UP/DOWN", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" select ", Style::default().fg(Color::DarkGray)),
+            Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+            Span::styled(" ", Style::default()),
+            Span::styled("[]", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" exit selector", Style::default().fg(Color::DarkGray)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(" ", Style::default()),
+            Span::styled("[]", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" selector ", Style::default().fg(Color::DarkGray)),
+            Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+            Span::styled(" ", Style::default()),
+            Span::styled("UP/DOWN", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(" scroll ", Style::default().fg(Color::DarkGray)),
+            Span::styled("|", Style::default().fg(Color::Rgb(50, 50, 70))),
+            Span::styled(format!(" PSP DRP v{}", version), Style::default().fg(Color::Cyan)),
+        ])
+    };
 
     let footer = Paragraph::new(footer_content)
         .alignment(Alignment::Left);

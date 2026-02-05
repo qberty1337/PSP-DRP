@@ -21,21 +21,21 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: x86_64-apple-darwin
-    
+
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      
+
       - name: Build Release
         working-directory: desktop-companion
         run: cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Verify binary exists
         shell: bash
         run: |
@@ -51,17 +51,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Build PSP Plugin
         run: |
           docker compose run --rm pspdev make clean-all
           docker compose run --rm pspdev make
-      
+
       - name: Verify PRX files exist
         run: |
           test -f psp-plugin/psp_drp_loader.prx
           test -f psp-plugin/psp_drp_loader_game.prx
           test -f psp-plugin/psp_drp_net.prx
+          test -f psp-plugin/psp_drp_usb.prx
 
   # Ensure all config files exist
   validate-configs:
@@ -69,7 +70,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Verify config files exist
         run: |
           test -f desktop-companion/config.toml.example

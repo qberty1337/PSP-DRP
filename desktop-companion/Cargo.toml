@@ -1,6 +1,6 @@
 [package]
 name = "psp-drp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Desktop companion app for PSP DRP"
 authors = ["qberty"]
@@ -34,6 +34,12 @@ base64 = "0.21"
 
 # Date/time for usage tracking
 chrono = "0.4"
+
+# File system watching for USB sync (file-based fallback)
+notify = { version = "6", features = ["macos_kqueue"] }
+
+# USB device communication (USBHostFS-style)
+rusb = "0.9"
 
 # TUI (Terminal User Interface)
 ratatui = "0.29"

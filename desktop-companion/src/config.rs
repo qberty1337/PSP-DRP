@@ -16,6 +16,10 @@ pub struct Config {
     /// Usage tracking settings
     #[serde(default)]
     pub usage: UsageConfig,
+
+    /// USB sync settings
+    #[serde(default)]
+    pub usb: UsbConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +87,18 @@ pub struct UsageConfig {
     pub log_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsbConfig {
+    /// Enable USB mode (direct communication with PSP)
+    /// Requires Zadig driver installation on Windows
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// How often to poll for PSP device (seconds)
+    #[serde(default = "default_usb_poll_interval")]
+    pub poll_interval_secs: u64,
+}
+
 // Default value functions
 fn default_true() -> bool {
     true
@@ -108,6 +124,9 @@ fn default_log_level() -> String {
 fn default_icon_mode() -> String {
     "ascii".to_string()
 }
+fn default_usb_poll_interval() -> u64 {
+    5
+}
 
 impl Default for Config {
     fn default() -> Self {
@@ -130,6 +149,7 @@ impl Default for Config {
                 icon_mode: default_icon_mode(),
             },
             usage: UsageConfig::default(),
+            usb: UsbConfig::default(),
         }
     }
 }
@@ -140,6 +160,22 @@ impl Default for UsageConfig {
             enabled: true,
             log_path: None,
         }
+    }
+}
+
+impl Default for UsbConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            poll_interval_secs: default_usb_poll_interval(),
+        }
+    }
+}
+
+impl UsbConfig {
+    /// Get poll interval as Duration
+    pub fn poll_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.poll_interval_secs)
     }
 }
 

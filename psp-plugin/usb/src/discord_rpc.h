@@ -19,11 +19,8 @@
 #define MSG_GAME_INFO 0x02
 #define MSG_ICON_CHUNK 0x03
 #define MSG_ICON_END 0x04
-#define MSG_STATS_REQUEST 0x05
-#define MSG_STATS_UPLOAD 0x06
 #define MSG_ACK 0x10
 #define MSG_ICON_REQUEST 0x11
-#define MSG_STATS_RESPONSE 0x12
 #define MSG_DISCOVERY_REQUEST 0x20
 #define MSG_DISCOVERY_RESPONSE 0x21
 
@@ -105,30 +102,5 @@ typedef struct {
   char magic[4];
   uint8_t type;
 } __attribute__((packed)) PacketHeader;
-
-/* Stats sync chunk size */
-#define STATS_CHUNK_SIZE 1024
-
-/* Stats request packet (PSP -> Desktop) */
-/* Empty - just header with type MSG_STATS_REQUEST */
-
-/* Stats upload packet (PSP -> Desktop) */
-typedef struct {
-  uint64_t last_updated; /* Unix timestamp of local data */
-  uint16_t chunk_index;  /* Current chunk (0-based) */
-  uint16_t total_chunks; /* Total chunks in transfer */
-  uint16_t data_length;  /* Bytes of json_data in this packet */
-  uint8_t json_data[STATS_CHUNK_SIZE];
-} __attribute__((packed)) StatsUploadPacket;
-
-/* Stats response packet (Desktop -> PSP) */
-typedef struct {
-  uint32_t total_bytes;  /* Total bytes in full JSON for verification */
-  uint64_t last_updated; /* Unix timestamp of desktop data */
-  uint16_t chunk_index;  /* Current chunk (0-based) */
-  uint16_t total_chunks; /* Total chunks in transfer */
-  uint16_t data_length;  /* Bytes of json_data in this packet */
-  uint8_t json_data[STATS_CHUNK_SIZE];
-} __attribute__((packed)) StatsResponsePacket;
 
 #endif /* PSP_DRP_H */

@@ -19,6 +19,7 @@ pub enum MessageType {
     IconChunk = 0x03,
     IconEnd = 0x04,
     StatsRequest = 0x05,  // Request usage stats from desktop
+    StatsUpload = 0x06,   // Upload local usage stats to desktop
     DiscoveryResponse = 0x21,
 
     // Desktop -> PSP
@@ -38,6 +39,7 @@ impl TryFrom<u8> for MessageType {
             0x03 => Ok(Self::IconChunk),
             0x04 => Ok(Self::IconEnd),
             0x05 => Ok(Self::StatsRequest),
+            0x06 => Ok(Self::StatsUpload),
             0x10 => Ok(Self::Ack),
             0x11 => Ok(Self::IconRequest),
             0x12 => Ok(Self::StatsResponse),
@@ -143,7 +145,7 @@ impl GameInfo {
         let start_time = u32::from_le_bytes([data[138], data[139], data[140], data[141]]);
 
         // Read state (1 byte)
-        let state = PspState::try_from(data[142]).unwrap_or_default();
+        let mut state = PspState::try_from(data[142]).unwrap_or_default();
 
         // Read has_icon (1 byte)
         let has_icon = data[143] != 0;
@@ -157,6 +159,13 @@ impl GameInfo {
         } else {
             String::new()
         };
+
+        // Treat SystemControl/SystemCon as XMB browsing (CFW module, not a game)
+        let game_id_lower = game_id.to_lowercase();
+        let title_lower = title.to_lowercase();
+        if game_id_lower.contains("systemcon") || title_lower.contains("systemcon") {
+            state = PspState::Xmb;
+        }
 
         Ok(Self {
             game_id,
@@ -336,21 +345,22 @@ impl IconRequest {
 }
 
 /// Stats response (sent by desktop to PSP with usage stats)
-/// Format: [total_games:u16][total_playtime:u64][chunk_index:u16][total_chunks:u16][data_len:u16][json_data...]
+/// Format: [total_bytes:u32][last_updated:u64][chunk_index:u16][total_chunks:u16][data_len:u16][json_data...]
 #[derive(Debug, Clone)]
 pub struct StatsResponse {
-    pub total_games: u16,
-    pub total_playtime: u64,  // Total playtime in seconds
+    pub total_bytes: u32,      // Total bytes in full JSON for verification
+    pub last_updated: u64,     // Unix timestamp of desktop's data
     pub chunk_index: u16,
     pub total_chunks: u16,
-    pub json_data: Vec<u8>,   // Chunk of JSON usage data
+    pub json_data: Vec<u8>,    // Chunk of JSON usage data
 }
 
 impl StatsResponse {
     /// Create a new stats response with chunked data
-    pub fn new_chunks(json_data: &[u8], total_games: u16, total_playtime: u64) -> Vec<Self> {
+    pub fn new_chunks(json_data: &[u8], last_updated: u64) -> Vec<Self> {
         const MAX_CHUNK_SIZE: usize = 1024;  // Keep packets under UDP MTU
         
+        let total_bytes = json_data.len() as u32;
         let total_chunks = ((json_data.len() + MAX_CHUNK_SIZE - 1) / MAX_CHUNK_SIZE).max(1) as u16;
         
         let mut chunks = Vec::new();
@@ -365,8 +375,8 @@ impl StatsResponse {
             };
             
             chunks.push(Self {
-                total_games,
-                total_playtime,
+                total_bytes,
+                last_updated,
                 chunk_index,
                 total_chunks,
                 json_data: chunk_data,
@@ -379,7 +389,7 @@ impl StatsResponse {
     }
 
     pub fn encode(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(4 + 1 + 16 + self.json_data.len());
+        let mut buf = Vec::with_capacity(4 + 1 + 18 + self.json_data.len());
 
         // Magic
         buf.extend_from_slice(MAGIC);
@@ -387,11 +397,11 @@ impl StatsResponse {
         // Type
         buf.push(MessageType::StatsResponse as u8);
 
-        // Total games (2 bytes)
-        buf.extend_from_slice(&self.total_games.to_le_bytes());
+        // Total bytes (4 bytes)
+        buf.extend_from_slice(&self.total_bytes.to_le_bytes());
         
-        // Total playtime (8 bytes)
-        buf.extend_from_slice(&self.total_playtime.to_le_bytes());
+        // Last updated (8 bytes)
+        buf.extend_from_slice(&self.last_updated.to_le_bytes());
         
         // Chunk index (2 bytes)
         buf.extend_from_slice(&self.chunk_index.to_le_bytes());
@@ -406,6 +416,50 @@ impl StatsResponse {
         buf.extend_from_slice(&self.json_data);
 
         buf
+    }
+}
+
+/// Stats upload (sent by PSP to desktop with local usage data)
+/// Format: [last_updated:u64][chunk_index:u16][total_chunks:u16][data_len:u16][json_data...]
+#[derive(Debug, Clone)]
+pub struct StatsUpload {
+    pub last_updated: u64,    // Unix timestamp of PSP's local data
+    pub chunk_index: u16,
+    pub total_chunks: u16,
+    pub json_data: Vec<u8>,   // Chunk of JSON usage data
+}
+
+impl StatsUpload {
+    pub fn decode(data: &[u8]) -> std::io::Result<Self> {
+        // Minimum size: last_updated(8) + chunk_index(2) + total_chunks(2) + data_len(2) = 14
+        if data.len() < 14 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "StatsUpload too short",
+            ));
+        }
+
+        let last_updated = u64::from_le_bytes([
+            data[0], data[1], data[2], data[3],
+            data[4], data[5], data[6], data[7],
+        ]);
+        let chunk_index = u16::from_le_bytes([data[8], data[9]]);
+        let total_chunks = u16::from_le_bytes([data[10], data[11]]);
+        let data_length = u16::from_le_bytes([data[12], data[13]]) as usize;
+
+        if data.len() < 14 + data_length {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "StatsUpload data incomplete",
+            ));
+        }
+
+        Ok(Self {
+            last_updated,
+            chunk_index,
+            total_chunks,
+            json_data: data[14..14 + data_length].to_vec(),
+        })
     }
 }
 

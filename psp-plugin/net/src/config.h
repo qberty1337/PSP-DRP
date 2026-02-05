@@ -60,6 +60,10 @@ typedef struct {
 
   /* Offline mode - no network, just local usage tracking */
   int offline_mode;
+
+  /* NOTE: USB mode is now handled by the loader (USB_MODE in psp_drp.ini).
+   * The loader loads USB plugin directly instead of NET plugin when USB_MODE=1.
+   */
 } PluginConfig;
 
 /**

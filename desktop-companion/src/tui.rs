@@ -94,6 +94,8 @@ pub struct TuiState {
     pub play_dates: std::collections::HashMap<String, Vec<String>>,
     /// Currently selected date in calendar (YYYY-MM-DD format), None means show all-time stats
     pub selected_date: Option<String>,
+    /// Game stats for the selected date (title, seconds_on_that_day), sorted by playtime
+    pub daily_game_stats: Vec<(String, u64)>,
 }
 
 /// A log entry with timestamp and content
@@ -954,22 +956,22 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Filter games based on selected date
-    let games_to_show: Vec<&GameStats> = if let Some(ref date) = state.selected_date {
-        // Get games played on the selected date
-        if let Some(game_titles) = state.play_dates.get(date) {
-            state.all_game_stats.iter()
-                .filter(|g| game_titles.contains(&g.title))
-                .collect()
-        } else {
-            vec![]
-        }
+    // When a date is selected, use daily_game_stats (per-day playtime)
+    // Otherwise, use all_game_stats (total playtime)
+    let has_daily_data = state.selected_date.is_some() && !state.daily_game_stats.is_empty();
+    
+    // Check for empty state
+    let is_empty = if has_daily_data {
+        state.daily_game_stats.is_empty()
+    } else if state.selected_date.is_some() {
+        // Date selected but no daily data - check play_dates for titles
+        state.play_dates.get(state.selected_date.as_ref().unwrap())
+            .map_or(true, |titles| titles.is_empty())
     } else {
-        // Show all games
-        state.all_game_stats.iter().collect()
+        state.all_game_stats.is_empty()
     };
 
-    if games_to_show.is_empty() {
+    if is_empty {
         let empty_msg = if state.selected_date.is_some() {
             Paragraph::new(Span::styled("No games played", Style::default().fg(Color::DarkGray).italic()))
         } else {
@@ -984,13 +986,6 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
     
     // Calculate bar width based on available space (reserve space for title + time + spacing)
     let bar_area_width = inner.width.saturating_sub(title_width as u16 + 8) as usize;
-
-    // Get max playtime for scaling (from the filtered games)
-    let max_seconds = games_to_show.iter()
-        .map(|g| g.total_seconds)
-        .max()
-        .unwrap_or(1)
-        .max(1) as f64;
 
     // Create bar lines for top games
     let bar_colors = [
@@ -1007,39 +1002,90 @@ fn render_bar_graph(frame: &mut Frame, area: Rect, state: &TuiState) {
         .map(|(i, g)| (g.title.as_str(), i))
         .collect();
 
-    let lines: Vec<Line> = games_to_show.iter()
-        .take(inner.height as usize)
-        .map(|game| {
-            // Truncate title with ellipsis
-            let title = if game.title.chars().count() > title_width {
-                let truncated: String = game.title.chars().take(title_width - 3).collect();
-                format!("{}...", truncated)
-            } else {
-                format!("{:<width$}", game.title, width = title_width)
-            };
+    // Build the lines based on which data source we're using
+    let lines: Vec<Line> = if has_daily_data {
+        // Use daily_game_stats for per-day playtime
+        let max_seconds = state.daily_game_stats.iter()
+            .map(|(_, secs)| *secs)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
+        
+        state.daily_game_stats.iter()
+            .take(inner.height as usize)
+            .map(|(game_title, seconds)| {
+                // Truncate title with ellipsis
+                let title = if game_title.chars().count() > title_width {
+                    let truncated: String = game_title.chars().take(title_width - 3).collect();
+                    format!("{}...", truncated)
+                } else {
+                    format!("{:<width$}", game_title, width = title_width)
+                };
 
-            // Calculate bar length - linear scaling with minimum of 1
-            let ratio = game.total_seconds as f64 / max_seconds;
-            let bar_len = ((ratio * bar_area_width as f64) as usize).max(1);
-            
-            // Create bar using block characters
-            let bar: String = "█".repeat(bar_len);
-            
-            // Format time
-            let time = format_duration_short(game.total_seconds);
+                // Calculate bar length - linear scaling with minimum of 1
+                let ratio = *seconds as f64 / max_seconds;
+                let bar_len = ((ratio * bar_area_width as f64) as usize).max(1);
+                
+                // Create bar using block characters
+                let bar: String = "█".repeat(bar_len);
+                
+                // Format time
+                let time = format_duration_short(*seconds);
 
-            // Use color based on position in all_game_stats (consistent coloring)
-            let color_idx = game_color_map.get(game.title.as_str()).copied().unwrap_or(0);
-            let color = bar_colors[color_idx % bar_colors.len()];
-            
-            Line::from(vec![
-                Span::styled(title, Style::default().fg(Color::White)),
-                Span::styled(" ", Style::default()),
-                Span::styled(bar, Style::default().fg(color)),
-                Span::styled(format!(" {}", time), Style::default().fg(Color::DarkGray)),
-            ])
-        })
-        .collect();
+                // Use color based on position in all_game_stats (consistent coloring)
+                let color_idx = game_color_map.get(game_title.as_str()).copied().unwrap_or(0);
+                let color = bar_colors[color_idx % bar_colors.len()];
+                
+                Line::from(vec![
+                    Span::styled(title, Style::default().fg(Color::White)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(bar, Style::default().fg(color)),
+                    Span::styled(format!(" {}", time), Style::default().fg(Color::DarkGray)),
+                ])
+            })
+            .collect()
+    } else {
+        // Use all_game_stats for all-time playtime
+        let max_seconds = state.all_game_stats.iter()
+            .map(|g| g.total_seconds)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
+        
+        state.all_game_stats.iter()
+            .take(inner.height as usize)
+            .map(|game| {
+                // Truncate title with ellipsis
+                let title = if game.title.chars().count() > title_width {
+                    let truncated: String = game.title.chars().take(title_width - 3).collect();
+                    format!("{}...", truncated)
+                } else {
+                    format!("{:<width$}", game.title, width = title_width)
+                };
+
+                // Calculate bar length - linear scaling with minimum of 1
+                let ratio = game.total_seconds as f64 / max_seconds;
+                let bar_len = ((ratio * bar_area_width as f64) as usize).max(1);
+                
+                // Create bar using block characters
+                let bar: String = "█".repeat(bar_len);
+                
+                // Format time
+                let time = format_duration_short(game.total_seconds);
+
+                // Use color based on position in all_game_stats (consistent coloring)
+                let color_idx = game_color_map.get(game.title.as_str()).copied().unwrap_or(0);
+                let color = bar_colors[color_idx % bar_colors.len()];
+                
+                Line::from(vec![
+                    Span::styled(title, Style::default().fg(Color::White)),
+                    Span::styled(" ", Style::default()),
+                    Span::styled(bar, Style::default().fg(color)),
+                    Span::styled(format!(" {}", time), Style::default().fg(Color::DarkGray)),
+                ])
+            })
+            .collect()
+    };
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);

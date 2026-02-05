@@ -11,6 +11,7 @@ mod server;
 mod thumbnail_matcher;
 mod tui;
 mod usage_tracker;
+mod usb_transport;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use server::{Server, ServerCommand, ServerEvent};
 use thumbnail_matcher::ThumbnailMatcher;
 use tui::{GameStats, Tui, TuiEvent, TuiState, ViewMode};
 use usage_tracker::UsageTracker;
+use usb_transport::{UsbCommand, UsbEvent, spawn_usb_task};
 
 /// Application refresh rate (10 Hz)
 const REFRESH_INTERVAL_MS: u64 = 100;
@@ -195,6 +197,27 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Start USB transport if direct mode enabled
+    let usb_config = config.usb.clone();
+    let (usb_transport_tx, mut usb_transport_rx) = mpsc::channel::<UsbEvent>(100);
+    let (usb_cmd_tx, usb_cmd_rx) = mpsc::channel::<UsbCommand>(100);
+    let usb_transport_handle = if usb_config.enabled {
+        {
+            let mut state = tui_state.write().await;
+            state.log_info("USB direct mode enabled - waiting for PSP USB device");
+        }
+        match spawn_usb_task(usb_config, usb_transport_tx, usb_cmd_rx).await {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                let mut state = tui_state.write().await;
+                state.log_error(&format!("Failed to start USB transport: {}", e));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Main event loop
     let mut refresh_interval = tokio::time::interval(Duration::from_millis(REFRESH_INTERVAL_MS));
     let mut discord_retry_time: Option<Instant> = None;
@@ -212,6 +235,114 @@ async fn main() -> Result<()> {
                     &server_cmd_tx,
                     &thumbnail_matcher,
                 ).await;
+            }
+            // Handle USB transport events
+            Some(usb_event) = usb_transport_rx.recv() => {
+                match usb_event {
+                    UsbEvent::Connected => {
+                        let mut state = tui_state.write().await;
+                        state.session_start = Some(Instant::now());
+                        state.status_message = "PSP connected via USB!".to_string();
+                        state.log_success("PSP connected via USB direct mode");
+                    }
+                    UsbEvent::Disconnected => {
+                        let mut state = tui_state.write().await;
+                        state.psp_name = None;
+                        state.psp_addr = None;
+                        state.current_game = None;
+                        state.ascii_art = None;
+                        state.session_start = None;
+                        state.status_message = "Waiting for PSP USB connection...".to_string();
+                        state.log_info("PSP USB disconnected");
+                        discord.clear_presence().await.ok();
+                    }
+                    UsbEvent::GameInfo(usb_game_info) => {
+                        // Convert USB game info to protocol GameInfo
+                        use crate::protocol::{GameInfo, PspState};
+                        let game_info = GameInfo {
+                            game_id: usb_game_info.game_id.clone(),
+                            title: usb_game_info.title.clone(),
+                            state: PspState::try_from(usb_game_info.state).unwrap_or_default(),
+                            has_icon: usb_game_info.has_icon,
+                            start_time: usb_game_info.start_time as u32,
+                            persistent: usb_game_info.persistent,
+                            psp_name: usb_game_info.psp_name.clone(),
+                        };
+                        
+                        // Update TUI state
+                        {
+                            let mut state = tui_state.write().await;
+                            if state.session_start.is_none() {
+                                state.session_start = Some(Instant::now());
+                            }
+                            if !game_info.psp_name.is_empty() {
+                                state.psp_name = Some(game_info.psp_name.clone());
+                            }
+                            state.current_game = Some(game_info.clone());
+                            state.status_message = format!("Playing: {}", game_info.title);
+                            state.log_info(&format!("USB: Now playing {}", game_info.title));
+                        }
+                        
+                        // Update Discord presence
+                        let thumbnail_url = thumbnail_matcher.find_thumbnail(&game_info.game_id, &game_info.title).await;
+                        discord.update_presence(&game_info, thumbnail_url.as_deref()).await.ok();
+                    }
+                    UsbEvent::IconData { game_id, data } => {
+                        let mut state = tui_state.write().await;
+                        state.log_info(&format!("USB: Received icon for {} ({} bytes)", game_id, data.len()));
+                        
+                        // Convert to ASCII/braille art (same as network mode)
+                        if let Some(ascii) = icon_manager.process_icon(&game_id, &data) {
+                            // Only update if this is the current game
+                            if state.current_game.as_ref().map(|g| &g.game_id) == Some(&game_id) {
+                                state.ascii_art = Some(ascii);
+                                state.log_success(&format!("Icon ready for {}", game_id));
+                            }
+                        }
+                    }
+                    UsbEvent::Error(msg) => {
+                        let mut state = tui_state.write().await;
+                        state.log_warn(&format!("USB error: {}", msg));
+                    }
+                    UsbEvent::StatsRequested { psp_name, local_timestamp: _ } => {
+                        // PSP requested stats - send our usage data
+                        let mut state = tui_state.write().await;
+                        let name = if psp_name.is_empty() {
+                            state.psp_name.clone().unwrap_or_else(|| "PSP".to_string())
+                        } else {
+                            psp_name.clone()
+                        };
+                        state.log_info(&format!("USB: Stats requested by {}", name));
+                        
+                        // Get usage data for this PSP (returns (json_string, last_updated))
+                        let (json_data, last_updated) = usage_tracker.get_usage_for_psp_json(&name);
+                        
+                        // Send stats response via command channel
+                        if let Err(e) = usb_cmd_tx.send(UsbCommand::SendStatsResponse { 
+                            last_updated, 
+                            json_data: json_data.clone() 
+                        }).await {
+                            state.log_warn(&format!("USB: Failed to queue stats response: {}", e));
+                        } else {
+                            state.log_info(&format!("USB: Sending stats ({} bytes, last_updated={})", 
+                                                   json_data.len(), last_updated));
+                        }
+                    }
+                    UsbEvent::StatsUploaded { last_updated, json_data } => {
+                        // PSP uploaded stats - merge them
+                        let mut state = tui_state.write().await;
+                        let psp_name = state.psp_name.clone().unwrap_or_else(|| "PSP".to_string());
+                        state.log_info(&format!("USB: Stats uploaded (timestamp={}, {} bytes)", 
+                                               last_updated, json_data.len()));
+                        
+                        // Merge the PSP's usage data
+                        if let Err(e) = usage_tracker.merge_from_psp(&psp_name, &json_data) {
+                            state.log_warn(&format!("USB: Failed to merge stats: {}", e));
+                        } else {
+                            state.log_success(&format!("USB: Merged stats for {}", psp_name));
+                        }
+                    }
+                }
             }
 
             // Refresh TUI
@@ -246,6 +377,12 @@ async fn main() -> Result<()> {
                     }
                     Some(TuiEvent::SelectDate(date)) => {
                         let mut state = tui_state.write().await;
+                        if let Some(ref d) = date {
+                            // Get per-day stats for the selected date
+                            state.daily_game_stats = usage_tracker.get_game_stats_for_date(d);
+                        } else {
+                            state.daily_game_stats = Vec::new();
+                        }
                         state.selected_date = date;
                     }
                     None => {}
@@ -293,6 +430,11 @@ async fn main() -> Result<()> {
 
     // Abort server
     server_handle.abort();
+    
+    // Abort USB transport if running
+    if let Some(handle) = usb_transport_handle {
+        handle.abort();
+    }
 
     Ok(())
 }
@@ -483,44 +625,43 @@ async fn handle_server_event(
             }
         }
 
-        ServerEvent::StatsRequested { addr } => {
+        ServerEvent::StatsRequested { addr, psp_name } => {
             let mut state = tui_state.write().await;
-            state.log_info(&format!("Stats requested from {}", addr));
+            state.log_info(&format!("Stats requested from {} ({})", psp_name, addr));
             
-            // Get all game stats and prepare JSON
-            let all_stats = usage_tracker.get_all_game_stats();
-            let total_games = all_stats.len() as u16;
-            let total_playtime: u64 = all_stats.iter().map(|(_, _, secs, _, _)| *secs).sum();
+            // Get usage data for this PSP using the sync API
+            let (json_data, last_updated) = usage_tracker.get_usage_for_psp_json(&psp_name);
             
-            // Build simplified JSON for PSP (just title, seconds, sessions)
-            let games_json: Vec<String> = all_stats.iter()
-                .map(|(title, game_id, seconds, sessions, _)| {
-                    format!(
-                        r#"{{"title":"{}","game_id":"{}","seconds":{},"sessions":{}}}"#,
-                        title.replace('"', "\\\""),
-                        game_id.replace('"', "\\\""),
-                        seconds,
-                        sessions
-                    )
-                })
-                .collect();
-            
-            let json_data = format!(
-                r#"{{"total_games":{},"total_playtime":{},"games":[{}]}}"#,
-                total_games,
-                total_playtime,
-                games_json.join(",")
-            );
-            
-            state.log_info(&format!("Sending {} games, {} bytes to PSP", total_games, json_data.len()));
+            state.log_info(&format!("Sending {} bytes to PSP (last_updated: {})", 
+                json_data.len(), last_updated));
             
             // Send stats via server command
             let _ = server_cmd_tx.send(ServerCommand::SendStats {
                 addr,
                 json_data: json_data.into_bytes(),
-                total_games,
-                total_playtime,
+                last_updated,
             }).await;
+        }
+
+        ServerEvent::StatsUploaded { addr, psp_name, last_updated, json_data } => {
+            let mut state = tui_state.write().await;
+            state.log_info(&format!("Stats uploaded from {} ({}), last_updated: {}", psp_name, addr, last_updated));
+            
+            // Merge the uploaded data into our usage tracker
+            match usage_tracker.merge_from_psp(&psp_name, &json_data) {
+                Ok(merge_count) => {
+                    state.log_success(&format!("Merged {} games from PSP '{}'", merge_count, psp_name));
+                    
+                    // Update top played games after merge
+                    let top_games = usage_tracker.get_top_played(3);
+                    state.top_played = top_games.into_iter()
+                        .map(|(title, secs)| (title, format_playtime(secs)))
+                        .collect();
+                }
+                Err(e) => {
+                    state.log_warn(&format!("Failed to merge stats from {}: {}", psp_name, e));
+                }
+            }
         }
     }
 }

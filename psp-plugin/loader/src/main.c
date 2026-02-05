@@ -18,6 +18,7 @@ PSP_MODULE_INFO(LOADER_MODULE_NAME, PSP_MODULE_USER, 1, 0);
 #define LOG_PREFIX "[LOADER] "
 #endif
 #define NET_PRX_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp_net.prx"
+#define USB_PRX_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp_usb.prx"
 #define CONFIG_PATH "ms0:/SEPLUGINS/pspdrp/psp_drp.ini"
 #define HEX_CHARS "0123456789ABCDEF"
 
@@ -125,9 +126,9 @@ static int get_current_game_id(char *game_id_out, int max_len) {
       /* Read the value */
       sceIoLseek(fd, header.data_table_offset + entry.data_offset,
                  PSP_SEEK_SET);
-      int read_len =
-          (entry.data_len < (unsigned int)max_len) ? (int)entry.data_len
-                                                   : max_len - 1;
+      int read_len = (entry.data_len < (unsigned int)max_len)
+                         ? (int)entry.data_len
+                         : max_len - 1;
       if (sceIoRead(fd, game_id_out, read_len) > 0) {
         game_id_out[read_len] = '\0';
         found = 1;
@@ -137,6 +138,93 @@ static int get_current_game_id(char *game_id_out, int max_len) {
 
   sceIoClose(fd);
   return found ? 0 : -1;
+}
+
+/**
+ * Get current game ID and title from PARAM.SFO.
+ * Returns 0 on success, -1 on failure.
+ */
+static int get_current_game_info(char *game_id_out, int id_max_len,
+                                 char *title_out, int title_max_len) {
+  SceUID fd;
+  SfoHeader header;
+  SfoEntry entry;
+  char key_buf[32];
+  int i;
+  int found_id = 0;
+  int found_title = 0;
+
+  /* Initialize outputs */
+  if (game_id_out && id_max_len > 0)
+    game_id_out[0] = '\0';
+  if (title_out && title_max_len > 0)
+    title_out[0] = '\0';
+
+  /* Try disc0 first (UMD games) */
+  fd = sceIoOpen("disc0:/PSP_GAME/PARAM.SFO", PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return -1;
+  }
+
+  /* Read SFO header */
+  if (sceIoRead(fd, &header, sizeof(header)) != sizeof(header)) {
+    sceIoClose(fd);
+    return -1;
+  }
+
+  /* Check magic (0x46535000 = "PSF\0") */
+  if (header.magic != 0x46535000) {
+    sceIoClose(fd);
+    return -1;
+  }
+
+  /* Search for DISC_ID and TITLE entries */
+  for (i = 0; i < (int)header.num_entries && !(found_id && found_title); i++) {
+    sceIoLseek(fd, 20 + i * 16, PSP_SEEK_SET);
+    if (sceIoRead(fd, &entry, sizeof(entry)) != sizeof(entry)) {
+      break;
+    }
+
+    /* Read key name */
+    sceIoLseek(fd, header.key_table_offset + entry.key_offset, PSP_SEEK_SET);
+    if (sceIoRead(fd, key_buf, sizeof(key_buf) - 1) <= 0) {
+      break;
+    }
+    key_buf[sizeof(key_buf) - 1] = '\0';
+
+    /* Check if this is DISC_ID */
+    if (!found_id && game_id_out && key_buf[0] == 'D' && key_buf[1] == 'I' &&
+        key_buf[2] == 'S' && key_buf[3] == 'C' && key_buf[4] == '_' &&
+        key_buf[5] == 'I' && key_buf[6] == 'D' && key_buf[7] == '\0') {
+      sceIoLseek(fd, header.data_table_offset + entry.data_offset,
+                 PSP_SEEK_SET);
+      int read_len = (entry.data_len < (unsigned int)id_max_len)
+                         ? (int)entry.data_len
+                         : id_max_len - 1;
+      if (sceIoRead(fd, game_id_out, read_len) > 0) {
+        game_id_out[read_len] = '\0';
+        found_id = 1;
+      }
+    }
+
+    /* Check if this is TITLE */
+    if (!found_title && title_out && key_buf[0] == 'T' && key_buf[1] == 'I' &&
+        key_buf[2] == 'T' && key_buf[3] == 'L' && key_buf[4] == 'E' &&
+        key_buf[5] == '\0') {
+      sceIoLseek(fd, header.data_table_offset + entry.data_offset,
+                 PSP_SEEK_SET);
+      int read_len = (entry.data_len < (unsigned int)title_max_len)
+                         ? (int)entry.data_len
+                         : title_max_len - 1;
+      if (sceIoRead(fd, title_out, read_len) > 0) {
+        title_out[read_len] = '\0';
+        found_title = 1;
+      }
+    }
+  }
+
+  sceIoClose(fd);
+  return found_id ? 0 : -1;
 }
 
 /**
@@ -183,6 +271,8 @@ typedef struct {
   unsigned int magic;
   int profile_id;
   unsigned int flags;
+  char game_id[16];
+  char game_title[64];
 } RpcStartArgs;
 
 #define RPC_START_FLAG_FROM_UI 0x01
@@ -510,7 +600,140 @@ static int load_startup_delay(void) {
   return AUTO_START_DELAY_MS;
 }
 
-static int load_net_plugin(void) {
+static int load_usb_mode(void) {
+  char buf[2048];
+  int len;
+  char *line;
+  char *next;
+  SceUID fd = sceIoOpen(CONFIG_PATH, PSP_O_RDONLY, 0);
+  if (fd < 0) {
+    return 0; /* Default: USB mode disabled */
+  }
+  len = sceIoRead(fd, buf, sizeof(buf) - 1);
+  sceIoClose(fd);
+  if (len <= 0) {
+    return 0;
+  }
+  buf[len] = '\0';
+  line = buf;
+  while (*line != '\0') {
+    char *p = line;
+    char *eq = NULL;
+    next = strchr(line, '\n');
+    if (next != NULL) {
+      *next = '\0';
+      next++;
+    }
+
+    while (*p == ' ' || *p == '\t' || *p == '\r') {
+      p++;
+    }
+    if (*p == '#' || *p == ';' || *p == '\0') {
+      line = (next != NULL) ? next : (line + strlen(line));
+      continue;
+    }
+
+    eq = strchr(p, '=');
+    if (eq != NULL) {
+      char *key_end = eq - 1;
+      char *val = eq + 1;
+      while (key_end > p && (*key_end == ' ' || *key_end == '\t')) {
+        *key_end-- = '\0';
+      }
+      *eq = '\0';
+      while (*val == ' ' || *val == '\t') {
+        val++;
+      }
+      if (token_equals(p, "USB_MODE")) {
+        return (*val == '1') ? 1 : 0;
+      }
+    }
+
+    line = (next != NULL) ? next : (line + strlen(line));
+  }
+
+  return 0; /* Default: USB mode disabled */
+}
+
+/* USB Module startup args magic - must match USB module's USB_STARTUP_MAGIC */
+#define USB_STARTUP_MAGIC 0x55534247 /* "USBG" */
+
+typedef struct {
+  unsigned int magic;
+  char game_id[16];
+  char game_title[64];
+} UsbStartupArgs;
+
+static int load_usb_plugin(const char *game_id, const char *game_title) {
+  char msg[12];
+  char hex[9];
+  int i;
+  SceUID modid = sceKernelLoadModule(USB_PRX_PATH, 0, NULL);
+  if (modid < 0) {
+    /* Check if module is already loaded */
+    if (modid == SCE_KERNEL_ERROR_EXCLUSIVE_LOAD) {
+      loader_log_raw("USB PRX already loaded");
+      return 0; /* Success - module is already running */
+    }
+    loader_log_raw("Load USB PRX failed");
+    u32_to_hex(hex, (unsigned int)modid);
+    msg[0] = '0';
+    msg[1] = 'x';
+    for (i = 0; i < 8; i++) {
+      msg[2 + i] = hex[i];
+    }
+    msg[10] = '\0';
+    loader_log_raw(msg);
+    return -1;
+  }
+  {
+    int start_res;
+    UsbStartupArgs startup_args;
+
+    /* Prepare startup args with game ID and title */
+    memset(&startup_args, 0, sizeof(startup_args));
+    startup_args.magic = USB_STARTUP_MAGIC;
+    if (game_id != NULL && game_id[0] != '\0') {
+      int j;
+      for (j = 0; j < 15 && game_id[j] != '\0'; j++) {
+        startup_args.game_id[j] = game_id[j];
+      }
+      startup_args.game_id[j] = '\0';
+      loader_log_raw("Passing game ID to USB PRX");
+    }
+    if (game_title != NULL && game_title[0] != '\0') {
+      int j;
+      for (j = 0; j < 63 && game_title[j] != '\0'; j++) {
+        startup_args.game_title[j] = game_title[j];
+      }
+      startup_args.game_title[j] = '\0';
+      loader_log_raw("Passing game title to USB PRX");
+    }
+
+    start_res = sceKernelStartModule(modid, sizeof(startup_args), &startup_args,
+                                     NULL, NULL);
+    if (start_res < 0) {
+      char msg[12];
+      char hex[9];
+      int i;
+      loader_log_raw("Start USB PRX failed");
+      u32_to_hex(hex, (unsigned int)start_res);
+      msg[0] = '0';
+      msg[1] = 'x';
+      for (i = 0; i < 8; i++) {
+        msg[2 + i] = hex[i];
+      }
+      msg[10] = '\0';
+      loader_log_raw(msg);
+      sceKernelUnloadModule(modid);
+      return -1;
+    }
+  }
+  loader_log_raw("USB PRX started");
+  return 0;
+}
+
+static int load_net_plugin(const char *game_id, const char *game_title) {
   char msg[12];
   char hex[9];
   int i;
@@ -540,6 +763,24 @@ static int load_net_plugin(void) {
     args.magic = RPC_START_MAGIC;
     args.profile_id = START_PROFILE_ID;
     args.flags = DEFAULT_START_FLAGS;
+
+    /* Pass game info to net plugin */
+    if (game_id != NULL && game_id[0] != '\0') {
+      int j;
+      for (j = 0; j < 15 && game_id[j] != '\0'; j++) {
+        args.game_id[j] = game_id[j];
+      }
+      args.game_id[j] = '\0';
+      loader_log_raw("Passing game ID to NET PRX");
+    }
+    if (game_title != NULL && game_title[0] != '\0') {
+      int j;
+      for (j = 0; j < 63 && game_title[j] != '\0'; j++) {
+        args.game_title[j] = game_title[j];
+      }
+      args.game_title[j] = '\0';
+      loader_log_raw("Passing game title to NET PRX");
+    }
 
     start_res = sceKernelStartModule(modid, sizeof(args), &args, NULL, NULL);
     if (start_res < 0) {
@@ -584,6 +825,7 @@ static int auto_start_thread(SceSize args, void *argp) {
   int max_attempts = AUTO_START_MAX_ATTEMPTS;
   int startup_delay = load_startup_delay();
   char game_id[16] = {0};
+  char game_title[64] = {0};
 
   sceCtrlSetSamplingCycle(0);
   sceCtrlSetSamplingMode(PSP_CTRL_MODE_DIGITAL);
@@ -592,9 +834,14 @@ static int auto_start_thread(SceSize args, void *argp) {
   sceKernelDelayThread(startup_delay * 1000);
 
   /* Check for incompatible games BEFORE loading net PRX */
-  if (get_current_game_id(game_id, sizeof(game_id)) == 0) {
+  /* Also get game title for USB mode */
+  if (get_current_game_info(game_id, sizeof(game_id), game_title,
+                            sizeof(game_title)) == 0) {
     loader_log_raw("Detected game:");
     loader_log_raw(game_id);
+    if (game_title[0] != '\0') {
+      loader_log_raw(game_title);
+    }
     if (is_game_incompatible(game_id)) {
       loader_log_raw("Game incompatible, skipping net PRX");
       return 0;
@@ -622,21 +869,40 @@ static int auto_start_thread(SceSize args, void *argp) {
       }
     }
   }
+  /* Check USB mode setting */
+  int usb_mode = load_usb_mode();
 
   while (attempts < max_attempts) {
     loader_log_raw("Auto-start attempt");
-    if (file_exists(NET_PRX_PATH)) {
-      if (load_net_plugin() == 0) {
-        return 0;
+
+    if (usb_mode) {
+      /* USB mode - load USB kernel PRX */
+      if (file_exists(USB_PRX_PATH)) {
+        loader_log_raw("Loading USB PRX");
+        if (load_usb_plugin(game_id, game_title) == 0) {
+          return 0;
+        }
+      } else {
+        loader_log_raw("USB PRX missing");
       }
     } else {
-      loader_log_raw("Auto-start net PRX missing");
+      /* Network mode - load NET user PRX */
+      if (file_exists(NET_PRX_PATH)) {
+        loader_log_raw("Loading NET PRX");
+        if (load_net_plugin(game_id, game_title) == 0) {
+          return 0;
+        }
+      } else {
+        loader_log_raw("NET PRX missing");
+      }
     }
+
     attempts++;
     sceKernelDelayThread(200 * 1000);
   }
 
-  loader_log_raw("Auto-start net PRX failed");
+  loader_log_raw(usb_mode ? "Auto-start USB PRX failed"
+                          : "Auto-start NET PRX failed");
   return 0;
 }
 #endif
