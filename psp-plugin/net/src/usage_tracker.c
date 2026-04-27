@@ -133,9 +133,11 @@ static void parse_json_string(const char *json, const char *key, char *out,
 /* Load usage data from JSON file */
 static void load_usage_json(void) {
   SceUID fd;
-  char buffer[4096];
+  static char buffer[8192];
   int bytes_read;
-  const char *games_start, *game_start, *game_end;
+  const char *games_start, *games_end;
+  const char *p;
+  int depth;
 
   memset(&g_usage_data, 0, sizeof(g_usage_data));
 
@@ -154,65 +156,84 @@ static void load_usage_json(void) {
   }
   buffer[bytes_read] = '\0';
 
-  /* Parse top-level fields */
-  g_usage_data.total_playtime = parse_json_number(buffer, "total_playtime");
+  /* Find the inner games object: "games":{ */
+  games_start = strstr(buffer, "\"games\":{");
+  if (!games_start) {
+    g_data_loaded = 1;
+    return;
+  }
+  games_start += 9; /* strlen("\"games\":{") */
 
-  /* Find games array */
-  games_start = strstr(buffer, "\"games\":");
-  if (games_start) {
-    games_start = strchr(games_start, '[');
-    if (games_start) {
-      games_start++;
-
-      /* Parse each game object */
-      game_start = strchr(games_start, '{');
-      while (game_start && g_usage_data.total_games < MAX_TRACKED_GAMES) {
-        game_end = strchr(game_start, '}');
-        if (!game_end)
-          break;
-
-        /* Extract a single game */
-        {
-          char game_json[512];
-          size_t len = game_end - game_start + 1;
-          if (len >= sizeof(game_json))
-            len = sizeof(game_json) - 1;
-          memcpy(game_json, game_start, len);
-          game_json[len] = '\0';
-
-          GameUsage *game = &g_usage_data.games[g_usage_data.total_games];
-          memset(game, 0, sizeof(GameUsage));
-
-          parse_json_string(game_json, "game_id", game->game_id,
-                            sizeof(game->game_id));
-          if (game->game_id[0] == '\0') {
-            /* Try alternate key name */
-            parse_json_string(game_json, "id", game->game_id,
-                              sizeof(game->game_id));
-          }
-          parse_json_string(game_json, "title", game->title,
-                            sizeof(game->title));
-
-          /* Try both field name variants */
-          game->total_seconds = parse_json_number(game_json, "seconds");
-          if (game->total_seconds == 0) {
-            game->total_seconds = parse_json_number(game_json, "total_seconds");
-          }
-          game->session_count =
-              (uint32_t)parse_json_number(game_json, "sessions");
-          if (game->session_count == 0) {
-            game->session_count =
-                (uint32_t)parse_json_number(game_json, "session_count");
-          }
-
-          if (game->game_id[0] != '\0') {
-            g_usage_data.total_games++;
-          }
-        }
-
-        game_start = strchr(game_end, '{');
-      }
+  /* Find matching closing brace via depth counting */
+  depth = 1;
+  games_end = games_start;
+  while (*games_end != '\0') {
+    if (*games_end == '{') {
+      depth++;
+    } else if (*games_end == '}') {
+      depth--;
+      if (depth == 0)
+        break;
     }
+    games_end++;
+  }
+  if (depth != 0) {
+    g_data_loaded = 1;
+    return;
+  }
+
+  /* Walk each "GAMEID:N":{ ... } entry inside the games object */
+  p = games_start;
+  while (p < games_end && g_usage_data.total_games < MAX_TRACKED_GAMES) {
+    const char *obj_start, *obj_end;
+    int obj_depth;
+    GameUsage *game;
+    char game_json[1024];
+    size_t obj_len;
+
+    /* Locate next game-object opening brace within bounds */
+    obj_start = strchr(p, '{');
+    if (!obj_start || obj_start >= games_end)
+      break;
+
+    /* Brace-count to matching close */
+    obj_depth = 1;
+    obj_end = obj_start + 1;
+    while (*obj_end != '\0' && obj_end < games_end) {
+      if (*obj_end == '{') {
+        obj_depth++;
+      } else if (*obj_end == '}') {
+        obj_depth--;
+        if (obj_depth == 0)
+          break;
+      }
+      obj_end++;
+    }
+    if (obj_depth != 0)
+      break;
+
+    obj_len = obj_end - obj_start + 1;
+    if (obj_len >= sizeof(game_json))
+      obj_len = sizeof(game_json) - 1;
+    memcpy(game_json, obj_start, obj_len);
+    game_json[obj_len] = '\0';
+
+    game = &g_usage_data.games[g_usage_data.total_games];
+    memset(game, 0, sizeof(GameUsage));
+
+    parse_json_string(game_json, "game_id", game->game_id,
+                      sizeof(game->game_id));
+    parse_json_string(game_json, "title", game->title, sizeof(game->title));
+    game->total_seconds = parse_json_number(game_json, "total_seconds");
+    game->session_count =
+        (uint32_t)parse_json_number(game_json, "session_count");
+
+    if (game->game_id[0] != '\0') {
+      g_usage_data.total_playtime += game->total_seconds;
+      g_usage_data.total_games++;
+    }
+
+    p = obj_end + 1;
   }
 
   g_data_loaded = 1;
